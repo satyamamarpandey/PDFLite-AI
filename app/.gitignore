@@ -1,0 +1,13 @@
+cat > .gitignore << 'EOF'
+*.iml
+.idea/
+.gradle/
+.local.properties
+/build
+**/build/
+captures/
+.externalNativeBuild/
+.cxx/
+.DS_Store
+Thumbs.db
+EOF
