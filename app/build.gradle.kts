@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -17,8 +19,32 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // Read local.properties once
+    val lp = Properties().apply {
+        val f = rootProject.file("local.properties")
+        if (f.exists()) f.inputStream().use { load(it) }
+    }
+
+    fun lpKey(name: String): String = (lp.getProperty(name, "") ?: "").trim()
+
     buildTypes {
+        debug {
+            // ✅ Debug can read from local.properties
+            buildConfigField("String", "GROQ_KEY", "\"${lpKey("GROQ_KEY")}\"")
+            buildConfigField("String", "OPENROUTER_KEY", "\"${lpKey("OPENROUTER_KEY")}\"")
+            buildConfigField("String", "NOVA_KEY", "\"${lpKey("NOVA_KEY")}\"")
+
+            // Optional: for Local compat if you ever want fallback
+            buildConfigField("String", "LOCAL_COMPAT_KEY", "\"${lpKey("LOCAL_COMPAT_KEY")}\"")
+        }
+
         release {
+            // ⚠️ Don’t ship secrets in release BuildConfig
+            buildConfigField("String", "GROQ_KEY", "\"\"")
+            buildConfigField("String", "OPENROUTER_KEY", "\"\"")
+            buildConfigField("String", "NOVA_KEY", "\"\"")
+            buildConfigField("String", "LOCAL_COMPAT_KEY", "\"\"")
+
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -34,11 +60,11 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 
 dependencies {
-    // Existing catalog libs
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
@@ -47,31 +73,22 @@ dependencies {
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
+    implementation("androidx.compose.material:material-icons-extended")
 
-    // ✅ Navigation
     implementation("androidx.navigation:navigation-compose:2.8.3")
-
-    // ✅ DataStore
     implementation("androidx.datastore:datastore-preferences:1.1.1")
 
-    // ✅ Coroutines
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
-    // ✅ PDFBox Android
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
 
-    // ✅ HTTP
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    debugImplementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
 
-    // ✅ JSON
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 
-    // Tests
-    testImplementation(libs.junit)
-    androidTestImplementation(libs.androidx.junit)
-    androidTestImplementation(libs.androidx.espresso.core)
-    androidTestImplementation(platform(libs.androidx.compose.bom))
-    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
-    debugImplementation(libs.androidx.compose.ui.tooling)
-    debugImplementation(libs.androidx.compose.ui.test.manifest)
+    // ✅ OCR fallback (ML Kit)
+    implementation("com.google.mlkit:text-recognition:16.0.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.9.0")
 }

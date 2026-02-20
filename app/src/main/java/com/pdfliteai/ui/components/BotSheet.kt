@@ -1,147 +1,252 @@
 package com.pdfliteai.ui.components
 
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.pdfliteai.data.Scope
+import com.pdfliteai.data.ProviderId
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BotSheet(
-    isOpen: Boolean,
-    onDismiss: () -> Unit,
-    scope: Scope,
-    onScopeChange: (Scope) -> Unit,
+    open: Boolean,
+    onClose: () -> Unit,
+
+    provider: ProviderId,
+    onProviderChange: (ProviderId) -> Unit,
+    model: String,
+    modelPresets: List<String>,
+    onModelChange: (String) -> Unit,
+    onModelPick: (String) -> Unit,
+
+    selectedMode: Boolean,
+    onSelectedMode: () -> Unit,
+    onEntireDocMode: () -> Unit,
+    onQuickPrompt: (String) -> Unit,
+
     question: String,
     onQuestionChange: (String) -> Unit,
-    onQuickAction: (String) -> Unit,
-    onAsk: () -> Unit,
     busy: Boolean,
-    answer: String,
-    error: String?
+    onAsk: () -> Unit,
+    onClear: () -> Unit,
+
+    showEdit: Boolean,
+    onRotateP1: () -> Unit,
+    onDeleteP1: () -> Unit,
+    onShare: () -> Unit,
+
+    selectedText: String,
+    onSelectedTextChange: (String) -> Unit,
+
+    errorText: String?,
+    answerText: String
 ) {
-    if (!isOpen) return
+    if (!open) return
 
     ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        // keeps it “chat widget” style instead of full page takeover
-        sheetMaxWidth = 640.dp
+        onDismissRequest = onClose,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        tonalElevation = 8.dp
     ) {
         Column(
-            Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-
-            // Header row like a chat widget
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Column {
-                    Text("Satyam Bot", style = MaterialTheme.typography.titleMedium)
-                    Text("Ask me about this PDF", style = MaterialTheme.typography.labelMedium)
+                    Text("Ask PDFLite AI", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                    Text("Chat over your PDF (selected text or entire document)", style = MaterialTheme.typography.labelMedium)
                 }
-                IconButton(onClick = onDismiss) {
-                    Text("✕")
+                TextButton(onClick = onClose) { Text("Close") }
+            }
+
+            ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("AI Engine", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        ProviderDropdown(
+                            modifier = Modifier.weight(1f),
+                            value = provider,
+                            onChange = onProviderChange
+                        )
+                        ModelDropdown(
+                            modifier = Modifier.weight(1f),
+                            current = model,
+                            presets = modelPresets,
+                            onPick = onModelPick,
+                            onEdit = onModelChange
+                        )
+                    }
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        AssistChip(onClick = { onQuickPrompt("Summarize the content clearly in bullet points.") }, label = { Text("Summarize") })
+                        AssistChip(onClick = { onQuickPrompt("Explain this in simple terms with an example.") }, label = { Text("Explain") })
+                        AssistChip(onClick = { onQuickPrompt("Give me key points and action items.") }, label = { Text("Key points") })
+                        AssistChip(onClick = { onQuickPrompt("Find important dates, names, numbers, and entities.") }, label = { Text("Find data") })
+                    }
                 }
             }
 
-            // Scope toggle
-            SingleChoiceSegmentedButtonRow {
+            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
                 SegmentedButton(
-                    selected = scope == Scope.SelectedText,
-                    onClick = { onScopeChange(Scope.SelectedText) },
-                    shape = SegmentedButtonDefaults.itemShape(0, 2)
-                ) { Text("Selected") }
-
+                    selected = selectedMode,
+                    onClick = onSelectedMode,
+                    shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
+                    label = { Text("Selected text") }
+                )
                 SegmentedButton(
-                    selected = scope == Scope.EntireDocument,
-                    onClick = { onScopeChange(Scope.EntireDocument) },
-                    shape = SegmentedButtonDefaults.itemShape(1, 2)
-                ) { Text("Entire doc") }
-            }
-
-            // Quick actions
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                AssistChip(
-                    onClick = { onQuickAction("Summarize this") },
-                    label = { Text("Summarize") }
-                )
-                AssistChip(
-                    onClick = { onQuickAction("Explain this section") },
-                    label = { Text("Explain") }
-                )
-                AssistChip(
-                    onClick = { onQuickAction("Key points in bullets") },
-                    label = { Text("Key points") }
+                    selected = !selectedMode,
+                    onClick = onEntireDocMode,
+                    shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
+                    label = { Text("Entire doc") }
                 )
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                AssistChip(
-                    onClick = { onQuickAction("What is this document about?") },
-                    label = { Text("About doc") }
-                )
-                AssistChip(
-                    onClick = { onQuickAction("Find dates/numbers and list them") },
-                    label = { Text("Find data") }
-                )
-            }
-
-            // Question input
-            OutlinedTextField(
-                value = question,
-                onValueChange = onQuestionChange,
-                label = { Text("Type your question…") },
-                minLines = 2,
-                modifier = Modifier.fillMaxWidth()
+            Text(
+                if (selectedMode) "Selected mode uses only the text captured from your selection."
+                else "Entire doc extracts text once (cached) and uses it for AI.",
+                style = MaterialTheme.typography.labelMedium
             )
 
-            // Actions
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Button(
-                    onClick = onAsk,
-                    enabled = !busy
-                ) { Text(if (busy) "Thinking…" else "Ask") }
+            ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = question,
+                        onValueChange = onQuestionChange,
+                        label = { Text("Ask a question") },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 2
+                    )
 
-                OutlinedButton(
-                    onClick = onDismiss
-                ) { Text("Close") }
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Button(onClick = onAsk, enabled = !busy) { Text(if (busy) "Asking..." else "Ask") }
+                        OutlinedButton(onClick = onClear, enabled = !busy) { Text("Clear") }
+                    }
+                }
             }
 
-            // Output area
-            error?.let {
-                Text("Error: $it", color = MaterialTheme.colorScheme.error)
-            }
-
-            if (answer.isNotBlank()) {
-                val scroll = rememberScrollState()
-                Surface(
-                    tonalElevation = 2.dp,
-                    shape = MaterialTheme.shapes.large,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    SelectionContainer {
-                        Column(
-                            Modifier.padding(12.dp).verticalScroll(scroll)
-                        ) {
-                            Text(answer)
+            if (showEdit) {
+                ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("Edit (lite)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Button(onClick = onRotateP1) { Text("Rotate p1") }
+                            Button(onClick = onDeleteP1) { Text("Delete p1") }
+                            OutlinedButton(onClick = onShare) { Text("Share") }
                         }
                     }
                 }
             }
 
-            Spacer(Modifier.height(12.dp))
+            if (selectedMode) {
+                OutlinedTextField(
+                    value = selectedText,
+                    onValueChange = onSelectedTextChange,
+                    label = { Text("Selected text") },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 4
+                )
+            }
+
+            if (!errorText.isNullOrBlank()) {
+                Text(errorText, color = MaterialTheme.colorScheme.error)
+            }
+
+            if (answerText.isNotBlank()) {
+                ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Answer", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        SelectionContainer {
+                            Text(answerText, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(10.dp))
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ProviderDropdown(
+    modifier: Modifier,
+    value: ProviderId,
+    onChange: (ProviderId) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = !expanded },
+        modifier = modifier
+    ) {
+        OutlinedTextField(
+            value = value.name,
+            onValueChange = {},
+            readOnly = true,
+            label = { Text("Provider") },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            modifier = Modifier.menuAnchor().fillMaxWidth()
+        )
+
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            ProviderId.entries.forEach { p ->
+                DropdownMenuItem(
+                    text = { Text(p.name) },
+                    onClick = {
+                        expanded = false
+                        onChange(p)
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModelDropdown(
+    modifier: Modifier,
+    current: String,
+    presets: List<String>,
+    onPick: (String) -> Unit,
+    onEdit: (String) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    Box(modifier) {
+        OutlinedTextField(
+            value = current,
+            onValueChange = onEdit,
+            label = { Text("Model") },
+            trailingIcon = {
+                IconButton(onClick = { expanded = true }) {
+                    Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                }
+            },
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            presets.forEach { m ->
+                DropdownMenuItem(
+                    text = { Text(m) },
+                    onClick = {
+                        expanded = false
+                        onPick(m)
+                    }
+                )
+            }
         }
     }
 }

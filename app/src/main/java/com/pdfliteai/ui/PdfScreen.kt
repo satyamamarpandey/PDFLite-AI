@@ -1,152 +1,129 @@
 package com.pdfliteai.ui
 
-import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.core.content.FileProvider
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.pdfliteai.ai.AiOrchestrator
-import com.pdfliteai.ai.ModelProvider
-import com.pdfliteai.ai.OllamaProvider
-import com.pdfliteai.ai.OpenAICompatProvider
-import com.pdfliteai.data.PrefKeys
-import com.pdfliteai.data.Prefs
 import com.pdfliteai.data.ProviderId
-import com.pdfliteai.data.Scope
-import com.pdfliteai.pdf.PageText
-import com.pdfliteai.pdf.PdfEditor
 import com.pdfliteai.pdf.PdfRepository
-import com.pdfliteai.pdf.PdfTextExtractor
+import com.pdfliteai.settings.SettingsViewModel
 import com.pdfliteai.ui.components.BotFab
 import com.pdfliteai.ui.components.BotSheet
 import com.pdfliteai.ui.components.PdfBitmapView
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PdfScreen(onOpenSettings: () -> Unit) {
-    val ctx = LocalContext.current
+fun PdfScreen(
+    repo: PdfRepository,
+    ai: AiOrchestrator,
+    onOpenSettings: () -> Unit
+) {
+    val vm: SettingsViewModel = viewModel()
     val cs = rememberCoroutineScope()
 
-    val repo = remember { PdfRepository(ctx) }
-    val extractor = remember { PdfTextExtractor() }
-    val editor = remember { PdfEditor() }
-    val prefs = remember { Prefs(ctx) }
+    val pdfFile by repo.pdfFile.collectAsState()
+    val cachedText by repo.cachedText.collectAsState()
+    val extracting by repo.extracting.collectAsState()
+    val repoErr by repo.lastError.collectAsState()
 
-    val providerId by prefs.providerFlow.collectAsState(initial = ProviderId.OpenAI)
-
-    var pdfFile by remember { mutableStateOf<File?>(null) }
-    var pages by remember { mutableStateOf<List<PageText>>(emptyList()) }
-
-    var pageCount by remember { mutableStateOf(0) }
-    var currentPage by remember { mutableStateOf(0) }
-
-    var selectedText by remember { mutableStateOf("") } // user paste
-    var scopeMode by remember { mutableStateOf(Scope.SelectedText) }
+    val s by vm.aiSettings.collectAsState()
 
     var botOpen by remember { mutableStateOf(false) }
-    var question by remember { mutableStateOf("") }
-    var aiAnswer by remember { mutableStateOf("") }
-    var aiError by remember { mutableStateOf<String?>(null) }
+
+    // false = entire doc, true = selected text
+    var selectedMode by remember { mutableStateOf(false) }
+
+    var question by remember { mutableStateOf("What's in this doc about?") }
+    var selectedText by remember { mutableStateOf("") }
+
+    var answer by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
 
-    val pickPdf = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+    var pageCount by remember { mutableStateOf(0) }
+    var pageIndex by remember { mutableStateOf(0) }
+
+    val picker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
         if (uri != null) {
-            cs.launch {
-                busy = true
-                aiError = null
-                aiAnswer = ""
-                val f = withContext(Dispatchers.IO) { repo.importPdf(uri) }
-                pdfFile = f
-                pages = emptyList() // ✅ don’t extract on open (prevents freezing)
-                selectedText = ""
-                currentPage = 0
-                busy = false
-            }
+            repo.openPdf(uri)
+            botOpen = true
+            selectedMode = false
         }
     }
 
-    fun shareCurrentPdf() {
-        val f = pdfFile ?: return
-        val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", f)
-        val intent = Intent(Intent.ACTION_SEND).apply {
-            type = "application/pdf"
-            putExtra(Intent.EXTRA_STREAM, uri)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
-        ctx.startActivity(Intent.createChooser(intent, "Share PDF"))
+    LaunchedEffect(pdfFile) {
+        val f = pdfFile ?: return@LaunchedEffect
+        repo.warmExtract(f)
+        error = null
+        answer = ""
+        pageIndex = 0
+        selectedMode = false
     }
 
-    suspend fun buildProvider(): ModelProvider {
-        val openaiUrl = prefs.stringFlow(PrefKeys.openaiBaseUrl, "https://api.openai.com").first()
-        val openaiKey = prefs.stringFlow(PrefKeys.openaiKey, "").first()
-
-        val openrouterUrl = prefs.stringFlow(PrefKeys.openrouterBaseUrl, "https://openrouter.ai/api").first()
-        val openrouterKey = prefs.stringFlow(PrefKeys.openrouterKey, "").first()
-
-        val groqUrl = prefs.stringFlow(PrefKeys.groqBaseUrl, "https://api.groq.com/openai").first()
-        val groqKey = prefs.stringFlow(PrefKeys.groqKey, "").first()
-
-        val ollamaUrl = prefs.stringFlow(PrefKeys.ollamaBaseUrl, "http://192.168.1.20:11434").first()
-        val model = prefs.modelFlow.first()
-
-        return when (providerId) {
-            ProviderId.OpenRouter -> OpenAICompatProvider(
-                baseUrl = openrouterUrl,
-                apiKey = openrouterKey,
-                model = model,
-                extraHeaders = mapOf(
-                    "HTTP-Referer" to "https://yourapp.example",
-                    "X-Title" to "PDFLite AI"
-                )
-            )
-            ProviderId.Groq -> OpenAICompatProvider(
-                baseUrl = groqUrl,
-                apiKey = groqKey,
-                model = model
-            )
-            ProviderId.OllamaLan -> OllamaProvider(
-                baseUrl = ollamaUrl,
-                model = if (model.isBlank()) "llama3.1" else model
-            )
-            else -> OpenAICompatProvider(
-                baseUrl = openaiUrl,
-                apiKey = openaiKey,
-                model = model
-            )
-        }
+    fun modelPresetsFor(p: ProviderId): List<String> = when (p) {
+        ProviderId.GROQ -> listOf("llama-3.1-8b-instant", "llama3-8b-8192", "llama3-70b-8192")
+        ProviderId.OPENROUTER -> listOf("openai/gpt-4o-mini", "openai/gpt-4o")
+        ProviderId.NOVA -> listOf("nova-lite-v1", "nova-pro-v1")
+        ProviderId.LOCAL_OPENAI_COMPAT -> listOf("gpt-4o-mini")
     }
 
-    fun ensureTextExtractedThen(run: suspend () -> Unit) {
-        val f = pdfFile ?: run {
-            aiError = "Open a PDF first."
-            return
+    suspend fun runAsk() {
+        val f = pdfFile
+
+        val contextBlock = if (selectedMode) {
+            val sel = selectedText.trim()
+            if (sel.isBlank()) throw IllegalStateException("Selected text is empty. Paste text or switch to Entire doc.")
+            "SELECTED TEXT:\n$sel"
+        } else {
+            if (f == null) throw IllegalStateException("Open a PDF first.")
+            val full = repo.getOrExtractText(f).trim()
+            if (full.isBlank()) throw IllegalStateException("Could not extract text from PDF.")
+            "DOCUMENT TEXT:\n$full"
         }
-        cs.launch {
-            busy = true
-            aiError = null
-            try {
-                if (pages.isEmpty()) {
-                    pages = withContext(Dispatchers.IO) { extractor.extractAllPages(f) }
-                }
-                run()
-            } catch (e: Exception) {
-                aiError = e.message
-            } finally {
-                busy = false
-            }
+
+        val prompt = buildString {
+            append("You are a helpful assistant. Answer using the provided text only.\n\n")
+            append(contextBlock)
+            append("\n\nUSER QUESTION:\n")
+            append(question.trim())
         }
+
+        // For fixed-key providers: vm.getApiKey reads BuildConfig. For local: optional.
+        val key = vm.getApiKey(s.provider).trim()
+        if (key.isBlank() && s.provider != ProviderId.LOCAL_OPENAI_COMPAT) {
+            throw IllegalStateException("Missing API key for ${s.provider}. Check local.properties / BuildConfig.")
+        }
+
+        answer = ai.chat(s, key, prompt)
     }
 
     Scaffold(
@@ -155,132 +132,123 @@ fun PdfScreen(onOpenSettings: () -> Unit) {
                 title = { Text("PDFLite AI") },
                 actions = {
                     TextButton(onClick = onOpenSettings) { Text("Settings") }
-                    TextButton(onClick = { pickPdf.launch(arrayOf("application/pdf")) }) { Text("Open") }
+                    TextButton(onClick = { picker.launch(arrayOf("application/pdf")) }) { Text("Open") }
                 }
             )
-        }
-    ) { padding ->
+        },
+        floatingActionButton = { BotFab(onClick = { botOpen = true }) }
+    ) { pad ->
+        Column(Modifier.padding(pad).fillMaxSize()) {
 
-        Box(
-            Modifier
-                .padding(padding)
-                .fillMaxSize()
-        ) {
-            // ✅ PDF background
-            val f = pdfFile
-            if (f == null) {
+            if (pdfFile != null) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    OutlinedButton(
+                        onClick = { pageIndex = (pageIndex - 1).coerceAtLeast(0) },
+                        enabled = pageIndex > 0
+                    ) { Text("Prev") }
+
+                    Text("Page ${pageIndex + 1} / ${maxOf(pageCount, 1)}")
+
+                    OutlinedButton(
+                        onClick = { pageIndex = (pageIndex + 1).coerceAtMost(maxOf(pageCount - 1, 0)) },
+                        enabled = pageCount > 0 && pageIndex < pageCount - 1
+                    ) { Text("Next") }
+                }
+
+                PdfBitmapView(
+                    pdfFile = pdfFile as File,
+                    pageIndex = pageIndex,
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    onPageCount = { pageCount = it },
+
+                    // ✅ REQUIRED by your updated PdfBitmapView signature
+                    // Keep it lightweight; don't do heavy extraction here.
+                    pageTextProvider = { _ ->
+                        cachedText
+                    },
+
+                    // ✅ REQUIRED by your updated PdfBitmapView signature
+                    onSelectedText = { txt ->
+                        val t = txt.trim()
+                        if (t.isNotBlank()) {
+                            selectedText = t
+                            selectedMode = true
+                            botOpen = true
+                        }
+                    }
+                )
+            } else {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text("Open a PDF to begin.")
                 }
-            } else {
-                Column(Modifier.fillMaxSize()) {
-
-                    // Page controls
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        OutlinedButton(
-                            enabled = currentPage > 0,
-                            onClick = { currentPage -= 1 }
-                        ) { Text("Prev") }
-
-                        Text("Page ${currentPage + 1} / ${if (pageCount == 0) "?" else pageCount}")
-
-                        OutlinedButton(
-                            enabled = pageCount > 0 && currentPage < pageCount - 1,
-                            onClick = { currentPage += 1 }
-                        ) { Text("Next") }
-                    }
-
-                    // Single-page view (light)
-                    PdfBitmapView(
-                        pdfFile = f,
-                        pageIndex = currentPage,
-                        modifier = Modifier.fillMaxSize(),
-                        onPageCount = { pageCount = it }
-                    )
-                }
             }
-
-            // ✅ Floating robot bottom-right
-            BotFab(
-                onClick = { botOpen = true },
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(18.dp)
-            )
-
-            // ✅ Bot sheet overlay (PDF stays behind)
-            BotSheet(
-                isOpen = botOpen,
-                onDismiss = { botOpen = false },
-                scope = scopeMode,
-                onScopeChange = { scopeMode = it },
-                question = question,
-                onQuestionChange = { question = it },
-                onQuickAction = { q ->
-                    question = q
-                    // auto-open ask style? keep manual for safety
-                },
-                onAsk = {
-                    val q = question.trim().ifEmpty { "Summarize this." }
-
-                    if (scopeMode == Scope.SelectedText) {
-                        // Selected text mode: uses only pasted selection
-                        cs.launch {
-                            busy = true
-                            aiError = null
-                            aiAnswer = "Thinking…"
-                            try {
-                                val sel = selectedText.trim()
-                                if (sel.isEmpty()) error("Paste selected text first.")
-
-                                val provider = buildProvider()
-                                val orch = AiOrchestrator(provider)
-
-                                val ans = withContext(Dispatchers.IO) {
-                                    orch.ask(
-                                        question = q,
-                                        scope = Scope.SelectedText.name,
-                                        selectedText = sel,
-                                        pages = emptyList()
-                                    )
-                                }
-                                aiAnswer = ans
-                            } catch (e: Exception) {
-                                aiAnswer = ""
-                                aiError = e.message
-                            } finally {
-                                busy = false
-                            }
-                        }
-                    } else {
-                        // Entire doc: extract if needed, then run
-                        ensureTextExtractedThen {
-                            val provider = buildProvider()
-                            val orch = AiOrchestrator(provider)
-                            aiAnswer = "Thinking…"
-
-                            val ans = withContext(Dispatchers.IO) {
-                                orch.ask(
-                                    question = q,
-                                    scope = Scope.EntireDocument.name,
-                                    selectedText = null,
-                                    pages = pages
-                                )
-                            }
-                            aiAnswer = ans
-                        }
-                    }
-                },
-                busy = busy,
-                answer = aiAnswer,
-                error = aiError
-            )
         }
-    }
 
-    // Keep “lite tools” accessible via long-press? For now: you can add them into BotSheet later.
+        BotSheet(
+            open = botOpen,
+            onClose = { botOpen = false },
+
+            provider = s.provider,
+            onProviderChange = { p ->
+                cs.launch {
+                    vm.setProvider(p)
+                    val defaults = modelPresetsFor(p)
+                    if (defaults.isNotEmpty()) vm.setModel(defaults.first())
+                }
+            },
+
+            model = s.model,
+            modelPresets = modelPresetsFor(s.provider),
+            onModelChange = { v -> cs.launch { vm.setModel(v) } },
+            onModelPick = { v -> cs.launch { vm.setModel(v) } },
+
+            selectedMode = selectedMode,
+            onSelectedMode = { selectedMode = true },
+            onEntireDocMode = { selectedMode = false },
+            onQuickPrompt = { promptText -> question = promptText },
+
+            question = question,
+            onQuestionChange = { question = it },
+            busy = busy,
+            onAsk = {
+                cs.launch {
+                    busy = true
+                    error = null
+                    try {
+                        runAsk()
+                    } catch (t: Throwable) {
+                        error = t.message ?: t::class.java.simpleName
+                        answer = ""
+                    } finally {
+                        busy = false
+                    }
+                }
+            },
+            onClear = {
+                question = ""
+                answer = ""
+                error = null
+            },
+
+            showEdit = true,
+            onRotateP1 = { },
+            onDeleteP1 = { },
+            onShare = { },
+
+            selectedText = selectedText,
+            onSelectedTextChange = { selectedText = it },
+
+            errorText = error ?: repoErr,
+            answerText = buildString {
+                if (!selectedMode) {
+                    if (extracting) append("Extracting document text in background…\n\n")
+                    if (cachedText.isNotBlank()) append("Doc cached ✅\n\n")
+                }
+                append(answer)
+            }
+        )
+    }
 }

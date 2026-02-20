@@ -3,9 +3,11 @@
     <uses-permission android:name="android.permission.INTERNET" />
 
     <application
+        android:name=".PdfLiteApp"
         android:allowBackup="true"
-        android:label="PDFLite AI"
-        android:supportsRtl="true">
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.PDFLiteAI">
 
         <provider
             android:name="androidx.core.content.FileProvider"
