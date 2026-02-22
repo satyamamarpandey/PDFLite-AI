@@ -46,11 +46,20 @@ class PdfRepository(
                 val f = copyToCache(uri)
                 _pdfFile.value = f
 
-                // warm cache
                 warmExtract(f)
             } catch (t: Throwable) {
                 _lastError.value = "Failed to open PDF: ${t.message ?: t::class.java.simpleName}"
             }
+        }
+    }
+
+    fun replacePdfFile(file: File) {
+        scope.launch {
+            _lastError.value = null
+            _cachedText.value = ""
+            _extracting.value = false
+            _pdfFile.value = file
+            warmExtract(file)
         }
     }
 
@@ -79,12 +88,10 @@ class PdfRepository(
         _extracting.value = true
 
         val txt = try {
-            // 1) PDFBox
             val direct = runCatching { extractor.extractAllText(file) }.getOrDefault("").trim()
             if (direct.isNotBlank()) {
                 direct
             } else {
-                // 2) OCR fallback first pages
                 val ocrText = runCatching { ocrPdfFirstPages(file, maxPages = 6) }
                     .getOrElse { e ->
                         _lastError.value = "OCR failed: ${e.message ?: e::class.java.simpleName}"
@@ -129,9 +136,7 @@ class PdfRepository(
 
         val out = File(ctx.cacheDir, "pdflite_${System.currentTimeMillis()}.pdf")
         inStream.use { input ->
-            out.outputStream().use { output ->
-                input.copyTo(output)
-            }
+            out.outputStream().use { output -> input.copyTo(output) }
         }
         return out
     }

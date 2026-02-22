@@ -9,9 +9,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.pdfliteai.ai.AiOrchestrator
 import com.pdfliteai.ai.OpenAICompatProvider
-import com.pdfliteai.data.ProviderId
 import com.pdfliteai.pdf.PdfRepository
-import com.pdfliteai.settings.SettingsViewModel
 import com.pdfliteai.ui.PdfScreen
 import com.pdfliteai.ui.theme.SettingsScreen
 import kotlinx.serialization.json.Json
@@ -43,14 +41,13 @@ fun AppNav(
             SettingsScreen(
                 onBack = { nav.popBackStack() },
                 onTestConnection = { provider, model, baseUrl, apiKey, temperature ->
-                    // Lightweight test prompt (no PDF needed)
                     val s = com.pdfliteai.settings.AiSettings(
                         provider = provider,
                         model = model,
                         baseUrl = baseUrl,
                         temperature = temperature
                     )
-                    val msg = ai.chat(s, apiKey, "Say 'OK' if you can hear me.")
+                    val msg = ai.chat(s, apiKey, "Say 'OK'.")
                     "OK: ${msg.take(120)}"
                 }
             )
