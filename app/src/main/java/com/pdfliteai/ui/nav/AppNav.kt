@@ -2,11 +2,13 @@ package com.pdfliteai.ui.nav
 
 import android.app.Application
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.pdfliteai.MainActivity
 import com.pdfliteai.ai.AiOrchestrator
 import com.pdfliteai.ai.OpenAICompatProvider
 import com.pdfliteai.pdf.PdfRepository
@@ -29,14 +31,23 @@ fun AppNav(
 
     val repo = remember { PdfRepository(app) }
 
+    // ✅ Observe pending "Open with" URI
+    val pendingUri by MainActivity.pendingOpenUriState
+    val pendingMime by MainActivity.pendingOpenMimeState
+
     NavHost(navController = nav, startDestination = "pdf", modifier = modifier) {
         composable("pdf") {
             PdfScreen(
                 repo = repo,
                 ai = ai,
-                onOpenSettings = { nav.navigate("settings") }
+                onOpenSettings = { nav.navigate("settings") },
+
+                // ✅ pass Open-with payload to PdfScreen
+                initialOpenUri = pendingUri,
+                initialOpenMime = pendingMime
             )
         }
+
         composable("settings") {
             SettingsScreen(
                 onBack = { nav.popBackStack() },

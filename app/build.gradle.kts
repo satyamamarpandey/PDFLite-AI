@@ -1,9 +1,15 @@
+// app/build.gradle.kts
 import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     id("org.jetbrains.kotlin.plugin.serialization") version "2.0.20"
+}
+
+// ✅ IMPORTANT: kotlin {} must be TOP-LEVEL (not inside android {})
+kotlin {
+    jvmToolchain(17)
 }
 
 android {
@@ -19,33 +25,34 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
-    // Read local.properties once
+    // Read local.properties once (debug only)
     val lp = Properties().apply {
         val f = rootProject.file("local.properties")
         if (f.exists()) f.inputStream().use { load(it) }
     }
-
     fun lpKey(name: String): String = (lp.getProperty(name, "") ?: "").trim()
 
     buildTypes {
         debug {
-            // ✅ Debug can read from local.properties
+            // ✅ OK for debug
             buildConfigField("String", "GROQ_KEY", "\"${lpKey("GROQ_KEY")}\"")
             buildConfigField("String", "OPENROUTER_KEY", "\"${lpKey("OPENROUTER_KEY")}\"")
             buildConfigField("String", "NOVA_KEY", "\"${lpKey("NOVA_KEY")}\"")
-
-            // Optional: for Local compat if you ever want fallback
             buildConfigField("String", "LOCAL_COMPAT_KEY", "\"${lpKey("LOCAL_COMPAT_KEY")}\"")
         }
 
         release {
-            // ⚠️ Don’t ship secrets in release BuildConfig
+            // ✅ Release should NOT ship keys (keep empty)
             buildConfigField("String", "GROQ_KEY", "\"\"")
             buildConfigField("String", "OPENROUTER_KEY", "\"\"")
             buildConfigField("String", "NOVA_KEY", "\"\"")
             buildConfigField("String", "LOCAL_COMPAT_KEY", "\"\"")
 
-            isMinifyEnabled = false
+            // ✅ Publish-ready shrink + obfuscation
+            isMinifyEnabled = true
+            isShrinkResources = true
+            isDebuggable = false
+
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -53,18 +60,34 @@ android {
         }
     }
 
+    // ✅ Java 17 compile options
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
 
     buildFeatures {
         compose = true
         buildConfig = true
     }
+
+    // ✅ conservative excludes (avoid excluding *.kotlin_module)
+    packaging {
+        resources {
+            excludes += setOf(
+                "META-INF/LICENSE*",
+                "META-INF/NOTICE*",
+                "META-INF/DEPENDENCIES"
+            )
+        }
+    }
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test.ext:junit:1.1.5")
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
+
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
@@ -77,7 +100,6 @@ dependencies {
 
     implementation("androidx.navigation:navigation-compose:2.8.3")
     implementation("androidx.datastore:datastore-preferences:1.1.1")
-
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
@@ -88,7 +110,7 @@ dependencies {
 
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 
-    // ✅ OCR fallback (ML Kit)
-    implementation("com.google.mlkit:text-recognition:16.0.1")
+    // ✅ OCR (smaller app): Play Services ML Kit
+    implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.9.0")
 }

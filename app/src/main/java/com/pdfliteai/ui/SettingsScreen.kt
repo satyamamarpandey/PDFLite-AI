@@ -137,7 +137,8 @@ fun SettingsScreen(
                             onValueChange = { vm.setModel(it) },
                             label = { Text("Model") },
                             modifier = Modifier.fillMaxWidth(),
-                            singleLine = true
+                            singleLine = true,
+                            placeholder = { Text("Enter the exact Model name") }
                         )
 
                         Spacer(Modifier.height(10.dp))
@@ -148,7 +149,7 @@ fun SettingsScreen(
                             label = { Text("Base URL") },
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true,
-                            placeholder = { Text("http://10.0.2.2:PORT or http://192.168.x.x:PORT (with or without /v1)") }
+                            placeholder = { Text("eg: http://10.0.2.2:PORT") }
                         )
 
                         Spacer(Modifier.height(10.dp))
@@ -261,7 +262,7 @@ fun SettingsScreen(
                     Spacer(Modifier.height(10.dp))
 
                     Text(
-                        "Recents limit: ${r.recentsLimit}",
+                        "Recent File' limit: ${r.recentsLimit}",
                         color = Color.White,
                         style = MaterialTheme.typography.titleSmall
                     )

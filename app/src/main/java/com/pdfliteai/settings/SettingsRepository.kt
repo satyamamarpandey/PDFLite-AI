@@ -84,7 +84,7 @@ class SettingsRepository(private val context: Context) {
         ProviderId.GROQ -> "llama-3.1-8b-instant"
         ProviderId.OPENROUTER -> "openai/gpt-4o-mini"
         ProviderId.NOVA -> "nova-lite-v1"
-        ProviderId.LOCAL_OPENAI_COMPAT -> "gpt-4o-mini"
+        ProviderId.LOCAL_OPENAI_COMPAT -> ""
     }
 
     suspend fun setProvider(p: ProviderId) {

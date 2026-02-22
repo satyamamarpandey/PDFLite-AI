@@ -80,8 +80,8 @@
                                             <option name="values">
                                               <map>
                                                 <entry key="color" value="000000" />
-                                                <entry key="imagePath" value="C:\Users\Piyusha\Downloads\PDFLite AI Icon.png" />
-                                                <entry key="scalingPercent" value="48" />
+                                                <entry key="imagePath" value="C:\Users\Piyusha\Downloads\PDFLite AI Icon New.png" />
+                                                <entry key="scalingPercent" value="62" />
                                               </map>
                                             </option>
                                           </PersistentState>
@@ -114,7 +114,7 @@
                                   <option name="values">
                                     <map>
                                       <entry key="backgroundAssetType" value="COLOR" />
-                                      <entry key="backgroundColor" value="ffffff" />
+                                      <entry key="backgroundColor" value="fae7ff" />
                                       <entry key="outputName" value="pdfliteaiicon" />
                                       <entry key="showGrid" value="true" />
                                     </map>

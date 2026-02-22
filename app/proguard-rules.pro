@@ -1,21 +1,21 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# ----------------------------
+# PDFLite AI - release shrink rules
+# ----------------------------
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+# Keep PDFBox Android (safe; prevents R8 from stripping internal classes)
+-keep class com.tom_roush.pdfbox.** { *; }
+-dontwarn com.tom_roush.pdfbox.**
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+# ML Kit (Play services / unbundled)
+-keep class com.google.mlkit.** { *; }
+-dontwarn com.google.mlkit.**
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+# ML Kit internal (often referenced via reflection / generated)
+-keep class com.google.android.gms.internal.mlkit_** { *; }
+-dontwarn com.google.android.gms.internal.mlkit_**
+
+# Kotlinx Serialization (only if you use @Serializable models)
+-keepclassmembers class ** {
+    @kotlinx.serialization.Serializable *;
+}
+-dontwarn kotlinx.serialization.**

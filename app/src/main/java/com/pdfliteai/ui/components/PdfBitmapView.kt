@@ -4,108 +4,182 @@ import android.graphics.Bitmap
 import android.graphics.pdf.PdfRenderer
 import android.os.ParcelFileDescriptor
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import kotlin.math.max
-import kotlin.math.min
 
+/**
+ * ✅ New: Scrollable PDF view (no Prev/Next)
+ * - Renders each page as a bitmap
+ * - Updates "current page" based on first visible page
+ * - Calls onPageCount once the renderer is ready
+ *
+ * NOTE: This does NOT remove your existing PdfBitmapView() (keep it if you already have it).
+ */
 @Composable
-fun PdfBitmapView(
+fun PdfScrollView(
     pdfFile: File,
-    pageIndex: Int,
     modifier: Modifier = Modifier,
     onPageCount: (Int) -> Unit = {},
-
-    // ✅ New: supply page text (from PdfRepository/PdfTextExtractor)
-    pageTextProvider: suspend (pageIndex: Int) -> String,
-
-    // ✅ New: callback to map selected text into UI
-    onSelectedText: (String) -> Unit
+    onVisiblePageChanged: (Int) -> Unit = {},
+    pageTextProvider: () -> String = { "" },
+    onSelectedText: (String) -> Unit = {}
 ) {
-    var bmp by remember(pdfFile, pageIndex) { mutableStateOf<Bitmap?>(null) }
-    var loading by remember(pdfFile, pageIndex) { mutableStateOf(true) }
+    val listState = rememberLazyListState()
 
-    val scope = rememberCoroutineScope()
+    var rendererHolder by remember(pdfFile) { mutableStateOf<RendererHolder?>(null) }
+    var pageCount by remember(pdfFile) { mutableIntStateOf(0) }
 
-    LaunchedEffect(pdfFile, pageIndex) {
-        loading = true
-        bmp = null
+    // Open renderer once per file
+    DisposableEffect(pdfFile) {
+        val holder = openRenderer(pdfFile)
+        rendererHolder = holder
+        pageCount = holder?.renderer?.pageCount ?: 0
+        onPageCount(pageCount)
 
-        val rendered = withContext(Dispatchers.IO) {
-            var pfd: ParcelFileDescriptor? = null
-            try {
-                pfd = ParcelFileDescriptor.open(pdfFile, ParcelFileDescriptor.MODE_READ_ONLY)
-                PdfRenderer(pfd).use { renderer ->
-                    val pc = renderer.pageCount
-                    onPageCount(pc)
+        onDispose {
+            rendererHolder?.close()
+            rendererHolder = null
+        }
+    }
 
-                    if (pc <= 0) return@withContext null
+    // Track current visible page for tools (rotate/delete/go-to)
+    val firstVisible by remember {
+        derivedStateOf { listState.firstVisibleItemIndex }
+    }
+    LaunchedEffect(firstVisible) {
+        if (pageCount > 0) onVisiblePageChanged(firstVisible.coerceIn(0, pageCount - 1))
+    }
 
-                    val safeIndex = min(max(pageIndex, 0), pc - 1)
+    if (pageCount <= 0 || rendererHolder == null) {
+        Box(modifier = modifier.padding(16.dp)) {
+            Text(
+                "Loading…",
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color.White.copy(alpha = 0.75f)
+            )
+        }
+        return
+    }
 
-                    renderer.openPage(safeIndex).use { page ->
-                        val scale = 2
-                        val w = max(1, page.width * scale)
-                        val h = max(1, page.height * scale)
+    // List pages 0..pageCount-1
+    val pages = remember(pageCount) { (0 until pageCount).toList() }
 
-                        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-                        out.eraseColor(android.graphics.Color.WHITE)
-                        page.render(out, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                        out
-                    }
+    LazyColumn(
+        state = listState,
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        items(pages) { pageIndex ->
+            PdfPageItem(
+                holder = rendererHolder!!,
+                pageIndex = pageIndex
+            )
+        }
+    }
+}
+
+@Composable
+private fun PdfPageItem(
+    holder: RendererHolder,
+    pageIndex: Int
+) {
+    // Render bitmap async (only when item composes)
+    val bmpState = produceState<Bitmap?>(initialValue = null, holder, pageIndex) {
+        value = withContext(Dispatchers.IO) {
+            renderPageBitmap(holder, pageIndex)
+        }
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp),
+        shape = RoundedCornerShape(14.dp),
+        color = Color.Black.copy(alpha = 0.20f),
+        tonalElevation = 0.dp
+    ) {
+        Box(Modifier.background(Color.Black.copy(alpha = 0.12f))) {
+            val bmp = bmpState.value
+            if (bmp != null) {
+                Image(
+                    bitmap = bmp.asImageBitmap(),
+                    contentDescription = "Page ${pageIndex + 1}",
+                    modifier = Modifier.fillMaxWidth(),
+                    contentScale = ContentScale.FillWidth
+                )
+            } else {
+                Box(Modifier.padding(16.dp)) {
+                    Text(
+                        "Rendering page ${pageIndex + 1}…",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.White.copy(alpha = 0.70f)
+                    )
                 }
-            } catch (_: Throwable) {
-                null
-            } finally {
-                try { pfd?.close() } catch (_: Throwable) {}
             }
         }
-
-        bmp = rendered
-        loading = false
     }
+}
 
-    Box(
-        modifier = modifier
-            .fillMaxSize()
-            .pointerInput(pdfFile, pageIndex) {
-                detectTapGestures(
-                    onLongPress = {
-                        // ✅ Best possible "selection" with bitmap-based renderer:
-                        // Long-press pulls current page text and maps it to selected text box.
-                        scope.launch {
-                            val txt = runCatching { pageTextProvider(pageIndex) }.getOrDefault("")
-                            val cleaned = txt.trim()
-                            if (cleaned.isNotBlank()) {
-                                onSelectedText(cleaned)
-                            }
-                        }
-                    }
-                )
-            },
-        contentAlignment = Alignment.Center
-    ) {
-        val b = bmp
-        if (b != null) {
-            Image(
-                bitmap = b.asImageBitmap(),
-                contentDescription = null,
-                modifier = Modifier.fillMaxWidth()
-            )
-        } else if (loading) {
-            CircularProgressIndicator()
+private class RendererHolder(
+    val pfd: ParcelFileDescriptor,
+    val renderer: PdfRenderer
+) {
+    fun close() {
+        runCatching { renderer.close() }
+        runCatching { pfd.close() }
+    }
+}
+
+private fun openRenderer(pdfFile: File): RendererHolder? {
+    return runCatching {
+        val pfd = ParcelFileDescriptor.open(pdfFile, ParcelFileDescriptor.MODE_READ_ONLY)
+        val renderer = PdfRenderer(pfd)
+        RendererHolder(pfd, renderer)
+    }.getOrNull()
+}
+
+private fun renderPageBitmap(holder: RendererHolder, pageIndex: Int): Bitmap? {
+    return runCatching {
+        val renderer = holder.renderer
+        if (pageIndex !in 0 until renderer.pageCount) return@runCatching null
+
+        renderer.openPage(pageIndex).use { page ->
+            // Render at higher scale for clarity
+            val scale = 2.0f
+            val w = (page.width * scale).toInt().coerceAtLeast(1)
+            val h = (page.height * scale).toInt().coerceAtLeast(1)
+
+            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+            bmp
         }
-    }
+    }.getOrNull()
 }

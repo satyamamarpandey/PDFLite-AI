@@ -14,19 +14,15 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Divider
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -38,6 +34,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -48,11 +48,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.pdfliteai.data.ProviderId
 import kotlinx.coroutines.launch
@@ -121,7 +124,7 @@ fun BotSheet(
     ) {
         Box(
             Modifier
-                .fillMaxHeight(0.92f)
+                .fillMaxHeight(0.94f)
                 .fillMaxWidth()
                 .navigationBarsPadding()
                 .imePadding()
@@ -172,15 +175,9 @@ fun BotSheet(
                             enabled = !busy
                         )
 
-                        Divider(color = Color.White.copy(alpha = 0.10f))
+                        HorizontalDivider(color = Color.White.copy(alpha = 0.10f))
 
-                        Text(
-                            "Quick prompts",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = Color.White.copy(alpha = 0.92f)
-                        )
-
-                        QuickPromptsGrid(
+                        QuickPromptsDropdown(
                             quickPrompts = quickPrompts,
                             enabled = !busy,
                             onQuickAsk = onQuickAsk
@@ -188,13 +185,13 @@ fun BotSheet(
                     }
                 }
 
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(10.dp))
 
                 // Chat area
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f),
+                        .weight(1.25f),
                     shape = RoundedCornerShape(18.dp),
                     color = Color.White.copy(alpha = 0.05f),
                     border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f))
@@ -216,29 +213,45 @@ fun BotSheet(
                             }
                         }
 
-                        LazyColumn(
-                            state = listState,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f)
-                                .padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            items(shown.size) { i ->
-                                val m = shown[i]
-                                ChatBubble(
-                                    msg = m,
-                                    onCopy = { raw ->
-                                        clipboard.setText(AnnotatedString(markdownToPlainText(raw)))
-                                        scope.launch { snack.showSnackbar("Copied") }
-                                    }
+                        if (shown.isEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .weight(1f)
+                                    .padding(14.dp),
+                                contentAlignment = Alignment.TopStart
+                            ) {
+                                Text(
+                                    text = "Your answer will appear here…",
+                                    color = Color.White.copy(alpha = 0.45f),
+                                    style = MaterialTheme.typography.bodyMedium
                                 )
+                            }
+                        } else {
+                            LazyColumn(
+                                state = listState,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .weight(1f)
+                                    .padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                items(shown.size) { i ->
+                                    val m = shown[i]
+                                    ChatBubble(
+                                        msg = m,
+                                        onCopy = { raw ->
+                                            clipboard.setText(AnnotatedString(markdownToPlainText(raw)))
+                                            scope.launch { snack.showSnackbar("Copied") }
+                                        }
+                                    )
+                                }
                             }
                         }
                     }
                 }
 
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(10.dp))
 
                 // Input area
                 Surface(
@@ -249,7 +262,6 @@ fun BotSheet(
                 ) {
                     Column(Modifier.padding(12.dp)) {
 
-                        // ✅ No placeholder text
                         OutlinedTextField(
                             value = question,
                             onValueChange = onQuestionChange,
@@ -257,12 +269,13 @@ fun BotSheet(
                             enabled = !busy,
                             minLines = 2,
                             maxLines = 5,
-                            placeholder = { Text("Enter your message here.", color = Color.White.copy(alpha = 0.45f)) }
+                            placeholder = {
+                                Text("Enter your message here.", color = Color.White.copy(alpha = 0.45f))
+                            }
                         )
 
                         Spacer(Modifier.height(10.dp))
 
-                        // ✅ Filled buttons
                         Row(
                             Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -300,7 +313,6 @@ fun BotSheet(
 
                         Spacer(Modifier.height(8.dp))
 
-                        // ✅ Disclaimer
                         Text(
                             "PDFLite AI can make mistakes, Check important info.",
                             style = MaterialTheme.typography.labelSmall,
@@ -310,7 +322,7 @@ fun BotSheet(
                     }
                 }
 
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(10.dp))
             }
 
             SnackbarHost(
@@ -324,8 +336,7 @@ fun BotSheet(
 }
 
 /**
- * ✅ Anchored dropdown (Material3 DropdownMenu) — will open directly under Provider field
- * Works on older Material3 (no ExposedDropdownMenu dependency).
+ * ✅ Provider dropdown - full width (matches anchor width)
  */
 @Composable
 private fun ProviderPicker(
@@ -334,6 +345,8 @@ private fun ProviderPicker(
     enabled: Boolean
 ) {
     var expanded by remember { mutableStateOf(false) }
+    var anchorSize by remember { mutableStateOf(IntSize.Zero) }
+    val density = LocalDensity.current
 
     val providers = remember {
         listOf(
@@ -345,8 +358,11 @@ private fun ProviderPicker(
     }
     val label = providers.firstOrNull { it.first == provider }?.second ?: provider.name
 
-    Box(Modifier.fillMaxWidth()) {
-
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .onGloballyPositioned { anchorSize = it.size }
+    ) {
         Surface(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(14.dp),
@@ -381,58 +397,106 @@ private fun ProviderPicker(
             }
         }
 
-        // ✅ This is the key: dropdown is declared right here (same Box), so it anchors under Provider.
+        val menuWidth = with(density) { anchorSize.width.toDp() }
+
         DropdownMenu(
             expanded = expanded,
-            onDismissRequest = { expanded = false }
+            onDismissRequest = { expanded = false },
+            modifier = Modifier
+                .width(menuWidth)
+                .background(Color(0xFF12121A))
         ) {
             providers.forEach { (id, name) ->
+                val selected = id == provider
                 DropdownMenuItem(
-                    text = { Text(name) },
+                    text = {
+                        Text(
+                            name,
+                            color = Color.White.copy(alpha = 0.92f),
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+                        )
+                    },
                     onClick = {
                         expanded = false
                         onProviderChange(id)
-                    }
+                    },
+                    enabled = enabled
                 )
             }
         }
     }
 }
 
+/**
+ * ✅ Quick prompts dropdown - full width (matches anchor width)
+ */
 @Composable
-private fun QuickPromptsGrid(
+private fun QuickPromptsDropdown(
     quickPrompts: List<Pair<String, String>>,
     enabled: Boolean,
     onQuickAsk: (String) -> Unit
 ) {
-    val rows = quickPrompts.chunked(2)
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        rows.forEach { row ->
+    var expanded by remember { mutableStateOf(false) }
+    var anchorSize by remember { mutableStateOf(IntSize.Zero) }
+    val density = LocalDensity.current
+
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .onGloballyPositioned { anchorSize = it.size }
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            color = Color.Black.copy(alpha = 0.35f),
+            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f))
+        ) {
             Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                row.forEach { (label, prompt) ->
-                    Surface(
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(14.dp),
-                        color = Color.White.copy(alpha = if (enabled) 0.06f else 0.03f),
-                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f))
-                    ) {
-                        TextButton(
-                            onClick = { onQuickAsk(prompt) },
-                            enabled = enabled,
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.textButtonColors(
-                                contentColor = Color.White,
-                                disabledContentColor = Color.White.copy(alpha = 0.35f)
-                            )
-                        ) {
-                            Text(label)
-                        }
-                    }
+                Column {
+                    Text(
+                        "Quick prompts",
+                        color = Color.White.copy(alpha = 0.92f),
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                    Text(
+                        "Select a prompt",
+                        color = Color.White.copy(alpha = 0.65f),
+                        style = MaterialTheme.typography.bodySmall
+                    )
                 }
-                if (row.size == 1) Spacer(Modifier.weight(1f))
+                Spacer(Modifier.weight(1f))
+                TextButton(
+                    onClick = { expanded = true },
+                    enabled = enabled
+                ) {
+                    Text("Choose", color = Color.White.copy(alpha = if (enabled) 0.9f else 0.4f))
+                }
+            }
+        }
+
+        val menuWidth = with(density) { anchorSize.width.toDp() }
+
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            modifier = Modifier
+                .width(menuWidth)
+                .background(Color(0xFF12121A))
+        ) {
+            quickPrompts.forEach { (label, prompt) ->
+                DropdownMenuItem(
+                    text = { Text(label, color = Color.White.copy(alpha = 0.92f)) },
+                    onClick = {
+                        expanded = false
+                        onQuickAsk(prompt)
+                    },
+                    enabled = enabled
+                )
             }
         }
     }

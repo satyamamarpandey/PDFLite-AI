@@ -17,25 +17,28 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -43,16 +46,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import androidx.core.graphics.createBitmap
+import androidx.core.net.toUri
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.google.android.gms.tasks.Task
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import com.pdfliteai.MainActivity
 import com.pdfliteai.ai.AiOrchestrator
 import com.pdfliteai.data.ProviderId
 import com.pdfliteai.pdf.PdfEditor
@@ -63,9 +70,8 @@ import com.pdfliteai.ui.components.BotSheet
 import com.pdfliteai.ui.components.ChatMessage
 import com.pdfliteai.ui.components.ChatRole
 import com.pdfliteai.ui.components.GlowPrimaryButton
-import com.pdfliteai.ui.components.PdfBitmapView
-import com.pdfliteai.ui.components.PdfTopBar
 import com.pdfliteai.ui.components.PdfSearchResult
+import com.pdfliteai.ui.components.PdfTopBar
 import com.pdfliteai.ui.components.ToolsSheetV2
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -75,6 +81,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.net.URLDecoder
 import java.util.Locale
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -95,11 +102,17 @@ import com.tom_roush.pdfbox.text.PDFTextStripper
 import com.tom_roush.pdfbox.text.TextPosition
 import com.tom_roush.pdfbox.util.Matrix
 
+private const val TTS_CHUNK_MAX = 3500
+
 @Composable
 fun PdfScreen(
     repo: PdfRepository,
     ai: AiOrchestrator,
-    onOpenSettings: () -> Unit
+    onOpenSettings: () -> Unit,
+
+    // ✅ NEW: incoming "Open with" payload
+    initialOpenUri: Uri? = null,
+    initialOpenMime: String? = null
 ) {
     val vm: SettingsViewModel = viewModel()
     val cs = rememberCoroutineScope()
@@ -131,8 +144,8 @@ fun PdfScreen(
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
-    var pageCount by remember { mutableStateOf(0) }
-    var pageIndex by remember { mutableStateOf(0) }
+    var pageCount by remember { mutableIntStateOf(0) }
+    var pageIndex by remember { mutableIntStateOf(0) }
 
     var docDisplayName by remember { mutableStateOf("document.pdf") }
 
@@ -140,7 +153,7 @@ fun PdfScreen(
     val editor = remember { PdfEditor() }
 
     // ✅ Search state
-    var docSessionId by remember { mutableStateOf(0) }   // increments only when opening a NEW PDF
+    var docSessionId by remember { mutableIntStateOf(0) }   // increments only when opening a NEW PDF
     var cleanPdfFile by remember { mutableStateOf<File?>(null) } // base PDF without search highlights
     var searchHighlightActive by remember { mutableStateOf(false) }
 
@@ -173,9 +186,35 @@ fun PdfScreen(
         }
     }
 
-    fun displayNameFor(uriStr: String): String {
+    // -----------------------------
+    // ✅ Recents entry packing (fix names)
+    // Store as: "<uri>||<displayName>"
+    // Backward compatible with old values that were just "<uri>"
+    // -----------------------------
+    val recentSep = "||"
+
+    fun unpackRecent(entry: String): Pair<String, String?> {
+        val i = entry.indexOf(recentSep)
+        return if (i >= 0) {
+            val u = entry.substring(0, i).trim()
+            val n = entry.substring(i + recentSep.length).trim()
+            u to n.ifBlank { null }
+        } else {
+            entry.trim() to null
+        }
+    }
+
+    fun packRecent(uriStr: String, name: String): String {
+        val u = uriStr.trim()
+        val n = name.trim()
+        return if (n.isBlank()) u else "$u$recentSep$n"
+    }
+
+    fun resolveDisplayName(uriStr: String): String {
         return runCatching {
-            val uri = Uri.parse(uriStr)
+            val uri = uriStr.toUri()
+
+            // 1) OpenableColumns
             ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
                 ?.use { c ->
                     val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
@@ -184,8 +223,47 @@ fun PdfScreen(
                         if (name.isNotBlank()) return@runCatching name
                     }
                 }
-            uri.lastPathSegment ?: uriStr
+
+            // 2) lastPathSegment (decoded)
+            val seg = (uri.lastPathSegment ?: uriStr).trim()
+            val decoded = runCatching { URLDecoder.decode(seg, "UTF-8") }.getOrDefault(seg)
+            decoded.ifBlank { uriStr }
         }.getOrDefault(uriStr)
+    }
+
+    fun displayNameForRecent(entry: String): String {
+        val (uriStr, savedName) = unpackRecent(entry)
+        return savedName?.takeIf { it.isNotBlank() } ?: resolveDisplayName(uriStr)
+    }
+
+    // ✅ consume "Open with" Uri and open it
+    LaunchedEffect(initialOpenUri, initialOpenMime) {
+        val uri = initialOpenUri ?: return@LaunchedEffect
+
+        val mime = (initialOpenMime ?: ctx.contentResolver.getType(uri)).orEmpty()
+        val isPdfMime = mime.equals("application/pdf", ignoreCase = true)
+        val isPdfByName = uri.toString().lowercase().contains(".pdf")
+
+        if (!isPdfMime && !isPdfByName) {
+            error = "Unsupported file type. Please open a PDF."
+            MainActivity.clearPendingOpen()
+            return@LaunchedEffect
+        }
+
+        // ✅ NEW DOC session
+        docSessionId += 1
+        searchHighlightActive = false
+        cleanPdfFile = null
+
+        val name = resolveDisplayName(uri.toString())
+        docDisplayName = name
+        repo.openPdf(uri)
+
+        // ✅ Save recent with filename (fixes content://... shown)
+        vm.addRecent(packRecent(uri.toString(), name))
+
+        botOpen = reader.autoOpenAi
+        MainActivity.clearPendingOpen()
     }
 
     val picker = rememberLauncherForActivityResult(
@@ -204,20 +282,23 @@ fun PdfScreen(
             searchHighlightActive = false
             cleanPdfFile = null
 
-            docDisplayName = displayNameFor(uri.toString())
+            val name = resolveDisplayName(uri.toString())
+            docDisplayName = name
             repo.openPdf(uri)
-            vm.addRecent(uri.toString())
+
+            // ✅ Save recent with filename
+            vm.addRecent(packRecent(uri.toString(), name))
+
             botOpen = reader.autoOpenAi
         }
     }
 
-    // Runs on any file change (rotate/delete/watermark/search/etc) -> only warm text
+    // Runs on any file change
     LaunchedEffect(pdfFile) {
         val f = pdfFile ?: return@LaunchedEffect
         repo.warmExtract(f)
         error = null
 
-        // Only update clean base when we're NOT showing search highlights
         if (!searchHighlightActive) {
             cleanPdfFile = f
         }
@@ -310,7 +391,7 @@ fun PdfScreen(
         engine.stop()
         ttsSpeaking = true
 
-        val chunks = chunkText(text, 3500)
+        val chunks = chunkText(text)
         ttsJob = cs.launch(Dispatchers.Main) {
             for ((i, c) in chunks.withIndex()) {
                 if (!isActive || !ttsSpeaking) break
@@ -336,7 +417,7 @@ fun PdfScreen(
         }
     }
 
-    suspend fun ocrRectsForPage(
+    suspend fun ocrRectanglesForPage(
         pdf: File,
         pageIndex0: Int,
         queryRaw: String,
@@ -361,13 +442,13 @@ fun PdfScreen(
             val bmpW = ((pageW / 72f) * dpi).toInt().coerceAtLeast(1)
             val bmpH = ((pageH / 72f) * dpi).toInt().coerceAtLeast(1)
 
-            val bitmap = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
+            val bitmap = createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
             page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
 
             val image = InputImage.fromBitmap(bitmap, 0)
             val result = ocrRecognizer.process(image).await()
 
-            val rectsPx = ArrayList<android.graphics.Rect>(64)
+            val rectanglesPx = ArrayList<android.graphics.Rect>(64)
 
             for (block in result.textBlocks) {
                 for (line in block.lines) {
@@ -392,7 +473,7 @@ fun PdfScreen(
                             val stop = off + token.length
                             val overlaps = stop > idx && start < end
                             if (overlaps) {
-                                elements[i].boundingBox?.let { rectsPx.add(it) }
+                                elements[i].boundingBox?.let { rectanglesPx.add(it) }
                             }
                             off = stop + 1
                         }
@@ -401,10 +482,10 @@ fun PdfScreen(
                 }
             }
 
-            if (rectsPx.isEmpty()) return@withContext emptyList()
+            if (rectanglesPx.isEmpty()) return@withContext emptyList()
 
-            val out = ArrayList<PDRectangle>(rectsPx.size)
-            for (r in rectsPx) {
+            val out = ArrayList<PDRectangle>(rectanglesPx.size)
+            for (r in rectanglesPx) {
                 val left = (r.left.toFloat() / bmpW) * pageW
                 val right = (r.right.toFloat() / bmpW) * pageW
 
@@ -429,7 +510,6 @@ fun PdfScreen(
 
     // -----------------------------
     // Search: fuzzy regex + highlight all + go to first match
-    // Text-based first; OCR fallback for scanned/image PDFs
     // -----------------------------
     suspend fun searchHighlightAndGo(queryRaw: String): PdfSearchResult {
         val current = pdfFile ?: return PdfSearchResult(false, 0, emptyList(), -1)
@@ -445,7 +525,7 @@ fun PdfScreen(
         return withContext(Dispatchers.IO) {
             runCatching { PDFBoxResourceLoader.init(ctx) }
 
-            val outFile = File(ctx.cacheDir, "pdflite_searchhl_${System.currentTimeMillis()}.pdf")
+            val outFile = File(ctx.cacheDir, "pdflite_search_highlight_${System.currentTimeMillis()}.pdf")
             var occurrences = 0
             val pagesFound = mutableSetOf<Int>()
             var firstPage = -1
@@ -460,9 +540,7 @@ fun PdfScreen(
 
                     val ranges = if (pageText.isNotBlank() && pos.isNotEmpty()) {
                         findAllOccurrenceRanges(pageText, query)
-                    } else {
-                        emptyList()
-                    }
+                    } else emptyList()
 
                     if (ranges.isNotEmpty()) {
                         pagesFound.add(p)
@@ -472,22 +550,19 @@ fun PdfScreen(
                         continue
                     }
 
-                    // ✅ OCR only when the page looks image-only (or no text positions)
                     val shouldOcr = pos.isEmpty() || pageText.isBlank() || pageText.length < 20
                     if (!shouldOcr) continue
 
-                    val ocrRects = ocrRectsForPage(base, p, query, mb.width, mb.height)
+                    val ocrRects = ocrRectanglesForPage(base, p, query, mb.width, mb.height)
                     if (ocrRects.isNotEmpty()) {
                         pagesFound.add(p)
                         if (firstPage < 0) firstPage = p
                         occurrences += ocrRects.size
-                        burnRectsIntoPage(doc, page, ocrRects)
+                        burnRectanglesIntoPage(doc, page, ocrRects)
                     }
                 }
 
-                if (occurrences > 0) {
-                    doc.save(outFile)
-                }
+                if (occurrences > 0) doc.save(outFile)
             }
 
             val ok = occurrences > 0
@@ -593,6 +668,15 @@ fun PdfScreen(
         )
     )
 
+    // ✅ Scroll state lifted (so Tools "Go to page" can scroll)
+    val pdfListState = rememberLazyListState()
+    val firstVisible by remember { derivedStateOf { pdfListState.firstVisibleItemIndex } }
+    LaunchedEffect(firstVisible, pageCount) {
+        if (pageCount > 0) {
+            pageIndex = firstVisible.coerceIn(0, pageCount - 1)
+        }
+    }
+
     Box(Modifier.fillMaxSize()) {
         Image(
             painter = painterResource(id = com.pdfliteai.R.drawable.aurora_header),
@@ -623,48 +707,17 @@ fun PdfScreen(
                     .fillMaxSize()
             ) {
                 if (pdfFile != null) {
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        TextButton(
-                            enabled = pageIndex > 0,
-                            onClick = { pageIndex = (pageIndex - 1).coerceAtLeast(0) },
-                            colors = ButtonDefaults.textButtonColors(
-                                contentColor = Color.White,
-                                disabledContentColor = Color.White.copy(alpha = 0.35f)
-                            ),
-                            contentPadding = ButtonDefaults.TextButtonContentPadding
-                        ) { Text("Prev") }
 
-                        Text(
-                            "Page ${pageIndex + 1} / ${maxOf(pageCount, 1)}",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = Color.White
-                        )
-
-                        TextButton(
-                            enabled = pageCount > 0 && pageIndex < pageCount - 1,
-                            onClick = { pageIndex = (pageIndex + 1).coerceAtMost((pageCount - 1).coerceAtLeast(0)) },
-                            colors = ButtonDefaults.textButtonColors(
-                                contentColor = Color.White,
-                                disabledContentColor = Color.White.copy(alpha = 0.35f)
-                            ),
-                            contentPadding = ButtonDefaults.TextButtonContentPadding
-                        ) { Text("Next") }
-                    }
-
-                    PdfBitmapView(
+                    // ✅ Scrollable PDF (no Prev/Next)
+                    PdfScrollViewInternal(
                         pdfFile = pdfFile as File,
-                        pageIndex = pageIndex,
-                        modifier = Modifier.weight(1f).fillMaxWidth(),
-                        onPageCount = { pageCount = it },
-                        pageTextProvider = { cachedText },
-                        onSelectedText = { _ -> botOpen = true }
+                        listState = pdfListState,
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth(),
+                        onPageCount = { pageCount = it }
                     )
+
                 } else {
                     Box(Modifier.fillMaxSize()) {
                         Column(
@@ -703,8 +756,10 @@ fun PdfScreen(
                                         )
                                     } else {
                                         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                            list.forEach { u ->
-                                                val name = displayNameFor(u)
+                                            list.forEach { entry ->
+                                                val (uriStr, savedName) = unpackRecent(entry)
+                                                val name = savedName ?: displayNameForRecent(entry)
+
                                                 Text(
                                                     text = name,
                                                     style = MaterialTheme.typography.bodyMedium,
@@ -712,15 +767,26 @@ fun PdfScreen(
                                                     modifier = Modifier
                                                         .fillMaxWidth()
                                                         .clickable {
-                                                            // ✅ NEW DOC session
+                                                            val uri = uriStr.toUri()
+
+                                                            // Try to persist again (best effort)
+                                                            runCatching {
+                                                                ctx.contentResolver.takePersistableUriPermission(
+                                                                    uri,
+                                                                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                                                )
+                                                            }
+
                                                             docSessionId += 1
                                                             searchHighlightActive = false
                                                             cleanPdfFile = null
 
                                                             docDisplayName = name
-                                                            val uri = Uri.parse(u)
                                                             repo.openPdf(uri)
-                                                            vm.addRecent(u)
+
+                                                            // Re-save to ensure packed format stays consistent
+                                                            vm.addRecent(packRecent(uriStr, name))
+
                                                             botOpen = reader.autoOpenAi
                                                         }
                                                         .padding(vertical = 6.dp)
@@ -811,7 +877,9 @@ fun PdfScreen(
 
                 onGoToPage1Based = { page1 ->
                     val idx0 = (page1 - 1).coerceIn(0, (pageCount - 1).coerceAtLeast(0))
-                    pageIndex = idx0
+                    cs.launch {
+                        runCatching { pdfListState.animateScrollToItem(idx0) }
+                    }
                 },
 
                 onRotateCurrent = { rotatePage() }
@@ -820,11 +888,123 @@ fun PdfScreen(
     }
 }
 
+/* =========================================================
+   ✅ Scrollable PDF implementation (inside this file only)
+   - fixes visual "messed up": white page base
+   ========================================================= */
+
+private class RendererHolder(
+    val pfd: ParcelFileDescriptor,
+    val renderer: PdfRenderer
+) {
+    fun close() {
+        runCatching { renderer.close() }
+        runCatching { pfd.close() }
+    }
+}
+
+@Composable
+private fun PdfScrollViewInternal(
+    pdfFile: File,
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    modifier: Modifier = Modifier,
+    onPageCount: (Int) -> Unit
+) {
+    var holder by remember(pdfFile) { mutableStateOf<RendererHolder?>(null) }
+    var count by remember(pdfFile) { mutableIntStateOf(0) }
+
+    DisposableEffect(pdfFile) {
+        val h = runCatching {
+            val pfd = ParcelFileDescriptor.open(pdfFile, ParcelFileDescriptor.MODE_READ_ONLY)
+            val r = PdfRenderer(pfd)
+            RendererHolder(pfd, r)
+        }.getOrNull()
+
+        holder = h
+        count = h?.renderer?.pageCount ?: 0
+        onPageCount(count)
+
+        onDispose {
+            holder?.close()
+            holder = null
+        }
+    }
+
+    val pages = remember(count) { (0 until count).toList() }
+
+    LazyColumn(
+        state = listState,
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        items(items = pages, key = { it }) { idx ->
+            PdfPageItemInternal(holder = holder, pageIndex = idx)
+        }
+    }
+}
+
+@Composable
+private fun PdfPageItemInternal(
+    holder: RendererHolder?,
+    pageIndex: Int
+) {
+    val bmpState = produceState<Bitmap?>(initialValue = null, holder, pageIndex) {
+        value = withContext(Dispatchers.IO) {
+            if (holder == null) return@withContext null
+            runCatching {
+                val r = holder.renderer
+                if (pageIndex !in 0 until r.pageCount) return@runCatching null
+
+                r.openPage(pageIndex).use { page ->
+                    val scale = 2.0f
+                    val w = (page.width * scale).toInt().coerceAtLeast(1)
+                    val h = (page.height * scale).toInt().coerceAtLeast(1)
+
+                    val bmp = createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                    bmp.eraseColor(android.graphics.Color.WHITE) // ✅ no aurora bleed
+                    page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                    bmp
+                }
+            }.getOrNull()
+        }
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp),
+        shape = RoundedCornerShape(18.dp),
+        color = Color.White.copy(alpha = 0.03f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f)),
+        shadowElevation = 8.dp
+    ) {
+        val bmp = bmpState.value
+        if (bmp != null) {
+            Box(Modifier.background(Color.White)) {
+                Image(
+                    bitmap = bmp.asImageBitmap(),
+                    contentDescription = "Page ${pageIndex + 1}",
+                    modifier = Modifier.fillMaxWidth(),
+                    contentScale = ContentScale.FillWidth
+                )
+            }
+        } else {
+            Box(Modifier.padding(16.dp)) {
+                Text(
+                    "Rendering page ${pageIndex + 1}…",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.White.copy(alpha = 0.70f)
+                )
+            }
+        }
+    }
+}
+
 /* -----------------------------
-   Helpers
+   Helpers (UNCHANGED behavior)
 ------------------------------ */
 
-private fun chunkText(s: String, max: Int): List<String> {
+private fun chunkText(s: String, max: Int = TTS_CHUNK_MAX): List<String> {
     if (s.length <= max) return listOf(s)
     val out = ArrayList<String>()
     var i = 0
@@ -837,7 +1017,7 @@ private fun chunkText(s: String, max: Int): List<String> {
 }
 
 private fun sanitizePdfName(name: String): String {
-    val base = (name.trim().ifBlank { "document.pdf" })
+    val base = name.trim().ifBlank { "document.pdf" }
         .replace(Regex("""[\\/:*?"<>|]"""), "_")
         .replace(Regex("""\s+"""), " ")
         .trim()
@@ -846,7 +1026,7 @@ private fun sanitizePdfName(name: String): String {
 }
 
 /**
- * Fuzzy regex: matches across whitespace/hyphenation/soft-hyphen/NBSP/ZWSP and common dash chars.
+ * Fuzzy regex: matches across whitespace/hyphenation/soft-hyphen/NBSP/zero-width space and common dash chars.
  * Returns ranges so highlights still work even if separators exist inside the match.
  */
 private fun findAllOccurrenceRanges(haystack: String, needle: String): List<IntRange> {
@@ -919,8 +1099,12 @@ private fun extractPageTextWithPositions(doc: PDDocument, pageNumber1Based: Int)
     return sb.toString() to pos
 }
 
-private fun burnRectsIntoPage(doc: PDDocument, page: PDPage, rects: List<PDRectangle>) {
-    if (rects.isEmpty()) return
+private fun PDPageContentStream.setNonStrokingRgb255(r: Int, g: Int, b: Int) {
+    setNonStrokingColor(r / 255f, g / 255f, b / 255f)
+}
+
+private fun burnRectanglesIntoPage(doc: PDDocument, page: PDPage, rectangles: List<PDRectangle>) {
+    if (rectangles.isEmpty()) return
 
     val gs = PDExtendedGraphicsState().apply {
         nonStrokingAlphaConstant = 0.25f
@@ -929,8 +1113,8 @@ private fun burnRectsIntoPage(doc: PDDocument, page: PDPage, rects: List<PDRecta
 
     PDPageContentStream(doc, page, AppendMode.APPEND, true, true).use { cs ->
         cs.setGraphicsStateParameters(gs)
-        cs.setNonStrokingColor(255, 255, 0)
-        for (r in rects) {
+        cs.setNonStrokingRgb255(255, 255, 0)
+        for (r in rectangles) {
             cs.addRect(r.lowerLeftX, r.lowerLeftY, r.width, r.height)
             cs.fill()
         }
@@ -946,23 +1130,22 @@ private fun burnHighlightsIntoPage(
 ) {
     if (ranges.isEmpty()) return
 
-    val rects = ArrayList<PDRectangle>(ranges.size * 2)
+    val rectangles = ArrayList<PDRectangle>(ranges.size * 2)
     for (r in ranges) {
         val start = r.first.coerceAtLeast(0)
         val endExclusive = (r.last + 1).coerceAtMost(positions.size)
         if (start >= endExclusive || start >= positions.size) continue
 
         val slice = positions.subList(start, endExclusive)
-        rects.addAll(buildLineRects(slice, pageHeight))
+        rectangles.addAll(buildLineRectangles(slice, pageHeight))
     }
 
-    burnRectsIntoPage(doc, page, rects)
+    burnRectanglesIntoPage(doc, page, rectangles)
 }
 
-private fun buildLineRects(slice: List<TextPosition>, pageHeight: Float): List<PDRectangle> {
+private fun buildLineRectangles(slice: List<TextPosition>, pageHeight: Float): List<PDRectangle> {
     if (slice.isEmpty()) return emptyList()
 
-    // Group by approximate line using yDirAdj (stable for grouping)
     val groups = slice.groupBy { (it.yDirAdj / 3f).toInt() }.toSortedMap(compareByDescending { it })
     val out = mutableListOf<PDRectangle>()
 
@@ -974,7 +1157,7 @@ private fun buildLineRects(slice: List<TextPosition>, pageHeight: Float): List<P
 
         for (tp in g) {
             val x = tp.xDirAdj
-            val yTop = pageHeight - tp.yDirAdj   // ✅ convert to PDF user space
+            val yTop = pageHeight - tp.yDirAdj
             val h = tp.heightDir
             val yBottom = yTop - h
             val w = tp.widthDirAdj
@@ -1022,7 +1205,7 @@ private fun addWatermarkToPage(doc: PDDocument, page: PDPage, text: String) {
         cs.setGraphicsStateParameters(gs)
         cs.beginText()
         cs.setFont(font, fontSize)
-        cs.setNonStrokingColor(110, 110, 110)
+        cs.setNonStrokingRgb255(110, 110, 110)
 
         cs.setTextMatrix(Matrix.getRotateInstance(Math.toRadians(35.0), centerX, centerY))
         cs.newLineAtOffset(-textWidth / 2f, -fontSize / 2f)
