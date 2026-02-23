@@ -3,7 +3,6 @@ package com.pdfliteai.settings
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.pdfliteai.BuildConfig
 import com.pdfliteai.data.ProviderId
 import com.pdfliteai.storage.SecureKeyStore
 import kotlinx.coroutines.flow.SharingStarted
@@ -14,6 +13,8 @@ import kotlinx.coroutines.launch
 class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     private val repo = SettingsRepository(app)
+
+    // Keep keystore ONLY for Local OpenAI Compat (optional)
     private val keyStore = SecureKeyStore(app)
 
     val aiSettings: StateFlow<AiSettings> =
@@ -30,24 +31,30 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun keyName(p: ProviderId) = when (p) {
-        ProviderId.GROQ -> "key_groq"
-        ProviderId.OPENROUTER -> "key_openrouter"
-        ProviderId.NOVA -> "key_nova"
         ProviderId.LOCAL_OPENAI_COMPAT -> "key_local_compat"
+        ProviderId.GROQ -> "key_groq"            // not used anymore
+        ProviderId.OPENROUTER -> "key_openrouter"// not used anymore
+        ProviderId.NOVA -> "key_nova"            // not used anymore
     }
 
+    /**
+     * ✅ Cloudflare mode:
+     * - Nova/Groq/OpenRouter keys are NOT stored on-device.
+     * - Worker holds provider keys.
+     *
+     * We return "" for those providers so nothing is ever shipped.
+     * Local OpenAI Compat can still use a user-provided key (stored securely).
+     */
     fun getApiKey(provider: ProviderId): String {
         return when (provider) {
-            ProviderId.GROQ -> BuildConfig.GROQ_KEY.trim()
-            ProviderId.OPENROUTER -> BuildConfig.OPENROUTER_KEY.trim()
-            ProviderId.NOVA -> BuildConfig.NOVA_KEY.trim()
-            ProviderId.LOCAL_OPENAI_COMPAT -> {
-                val saved = keyStore.get(keyName(provider)).trim()
-                if (saved.isNotBlank()) saved else BuildConfig.LOCAL_COMPAT_KEY.trim()
-            }
+            ProviderId.LOCAL_OPENAI_COMPAT -> keyStore.get(keyName(provider)).trim()
+            ProviderId.GROQ, ProviderId.OPENROUTER, ProviderId.NOVA -> ""
         }
     }
 
+    /**
+     * Only allow saving key for Local OpenAI Compat.
+     */
     fun setApiKey(provider: ProviderId, key: String) {
         if (provider != ProviderId.LOCAL_OPENAI_COMPAT) return
         keyStore.put(keyName(provider), key)

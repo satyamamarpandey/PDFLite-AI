@@ -358,8 +358,10 @@ fun PdfScreen(
         if (q.isBlank()) throw IllegalStateException("Type a question or use a quick prompt.")
 
         val key = vm.getApiKey(s.provider).trim()
-        if (key.isBlank() && s.provider != ProviderId.LOCAL_OPENAI_COMPAT) {
-            throw IllegalStateException("Missing API key for ${s.provider}. Check local.properties / BuildConfig.")
+        // ✅ Only require a key when using Local OpenAI Compat.
+        // For Groq/OpenRouter/Nova, keys are stored in Cloudflare Worker secrets.
+        if (s.provider == ProviderId.LOCAL_OPENAI_COMPAT && key.isBlank()) {
+            throw IllegalStateException("Missing API key for Local provider. Please set it in Settings.")
         }
 
         val docForAi = if (s.provider == ProviderId.GROQ) {

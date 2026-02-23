@@ -1,6 +1,4 @@
 // app/build.gradle.kts
-import java.util.Properties
-
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -25,29 +23,16 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
-    // Read local.properties once (debug only)
-    val lp = Properties().apply {
-        val f = rootProject.file("local.properties")
-        if (f.exists()) f.inputStream().use { load(it) }
-    }
-    fun lpKey(name: String): String = (lp.getProperty(name, "") ?: "").trim()
-
     buildTypes {
         debug {
-            // ✅ OK for debug
-            buildConfigField("String", "GROQ_KEY", "\"${lpKey("GROQ_KEY")}\"")
-            buildConfigField("String", "OPENROUTER_KEY", "\"${lpKey("OPENROUTER_KEY")}\"")
-            buildConfigField("String", "NOVA_KEY", "\"${lpKey("NOVA_KEY")}\"")
-            buildConfigField("String", "LOCAL_COMPAT_KEY", "\"${lpKey("LOCAL_COMPAT_KEY")}\"")
+            // ✅ No keys shipped; Cloudflare Worker holds provider keys.
+            // Keep debug simple.
+            isMinifyEnabled = false
+            isShrinkResources = false
+            isDebuggable = true
         }
 
         release {
-            // ✅ Release should NOT ship keys (keep empty)
-            buildConfigField("String", "GROQ_KEY", "\"\"")
-            buildConfigField("String", "OPENROUTER_KEY", "\"\"")
-            buildConfigField("String", "NOVA_KEY", "\"\"")
-            buildConfigField("String", "LOCAL_COMPAT_KEY", "\"\"")
-
             // ✅ Publish-ready shrink + obfuscation
             isMinifyEnabled = true
             isShrinkResources = true
@@ -71,7 +56,7 @@ android {
         buildConfig = true
     }
 
-    // ✅ conservative excludes (avoid excluding *.kotlin_module)
+    // ✅ Conservative excludes (avoid excluding *.kotlin_module)
     packaging {
         resources {
             excludes += setOf(
