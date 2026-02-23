@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import com.pdfliteai.data.ProviderId
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -34,13 +35,21 @@ class PdfRepository(
     private val _lastError = MutableStateFlow<String?>(null)
     val lastError: StateFlow<String?> = _lastError
 
+    // ✅ existing extracted text cache
     private val memoryCache = LinkedHashMap<String, String>(8, 0.75f, true)
+
+    // ✅ NEW: condensed doc cache (Groq-safe <= 6000 chars)
+    private val condensedCache = LinkedHashMap<String, String>(8, 0.75f, true)
+
+    private val _cachedCondensedText = MutableStateFlow("")
+    val cachedCondensedText: StateFlow<String> = _cachedCondensedText
 
     fun openPdf(uri: Uri) {
         scope.launch {
             try {
                 _lastError.value = null
                 _cachedText.value = ""
+                _cachedCondensedText.value = ""
                 _extracting.value = false
 
                 val f = copyToCache(uri)
@@ -57,6 +66,7 @@ class PdfRepository(
         scope.launch {
             _lastError.value = null
             _cachedText.value = ""
+            _cachedCondensedText.value = ""
             _extracting.value = false
             _pdfFile.value = file
             warmExtract(file)
@@ -65,6 +75,44 @@ class PdfRepository(
 
     fun warmExtract(file: File) {
         scope.launch { getOrExtractText(file) }
+    }
+
+    // ✅ Key used for text extraction caching (existing behavior)
+    fun docKey(file: File): String = cacheKey(file)
+
+    // ✅ Key used for condensed caching
+    fun condensedKey(file: File, provider: ProviderId, model: String): String {
+        return "${cacheKey(file)}|${provider.name}|${model.trim()}"
+    }
+
+    fun hasCondensed(key: String): Boolean = condensedCache.containsKey(key)
+
+    fun putCondensed(key: String, value: String) {
+        val v = value.trim()
+        if (v.isBlank()) return
+
+        condensedCache[key] = v
+        while (condensedCache.size > 6) {
+            val firstKey = condensedCache.entries.first().key
+            condensedCache.remove(firstKey)
+        }
+        _cachedCondensedText.value = v
+    }
+
+    suspend fun getOrComputeCondensed(
+        key: String,
+        compute: suspend () -> String
+    ): String {
+        condensedCache[key]?.let {
+            _cachedCondensedText.value = it
+            return it
+        }
+
+        val v = runCatching { compute() }.getOrDefault("").trim()
+        if (v.isNotBlank()) {
+            putCondensed(key, v)
+        }
+        return v
     }
 
     suspend fun getOrExtractText(file: File): String {
