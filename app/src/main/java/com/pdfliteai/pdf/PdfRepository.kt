@@ -6,8 +6,10 @@ import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.ParcelFileDescriptor
 import com.pdfliteai.data.ProviderId
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -16,12 +18,17 @@ import java.io.File
 import java.security.MessageDigest
 import kotlin.math.max
 
+enum class DocKind { NONE, PDF, TEXT }
+
 class PdfRepository(
     private val ctx: Context,
     private val extractor: PdfTextExtractor = PdfTextExtractor(),
     private val ocr: OcrTextExtractor = OcrTextExtractor()
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    private val _docKind = MutableStateFlow(DocKind.NONE)
+    val docKind: StateFlow<DocKind> = _docKind
 
     private val _pdfFile = MutableStateFlow<File?>(null)
     val pdfFile: StateFlow<File?> = _pdfFile
@@ -35,52 +42,88 @@ class PdfRepository(
     private val _lastError = MutableStateFlow<String?>(null)
     val lastError: StateFlow<String?> = _lastError
 
-    // ✅ existing extracted text cache
+    // ✅ extracted text cache
     private val memoryCache = LinkedHashMap<String, String>(8, 0.75f, true)
 
-    // ✅ NEW: condensed doc cache (Groq-safe <= 6000 chars)
+    // ✅ condensed cache
     private val condensedCache = LinkedHashMap<String, String>(8, 0.75f, true)
 
     private val _cachedCondensedText = MutableStateFlow("")
     val cachedCondensedText: StateFlow<String> = _cachedCondensedText
 
-    fun openPdf(uri: Uri) {
-        scope.launch {
-            try {
-                _lastError.value = null
-                _cachedText.value = ""
-                _cachedCondensedText.value = ""
-                _extracting.value = false
+    // ✅ serialize "open/replace" so state doesn't race during Lazy measure
+    private var openJob: Job? = null
 
-                val f = copyToCache(uri)
+    fun openPdf(uri: Uri) {
+        openJob?.cancel()
+        openJob = scope.launch {
+            try {
+                resetStateForNewDoc()
+                _docKind.value = DocKind.PDF
+
+                // ✅ IMPORTANT: immediately drop old PDF to dispose LazyColumn fast
+                _pdfFile.value = null
+
+                val f = copyToCachePdf(uri)
                 _pdfFile.value = f
 
-                warmExtract(f)
+                getOrExtractText(f)
+            } catch (ce: CancellationException) {
+                throw ce
             } catch (t: Throwable) {
                 _lastError.value = "Failed to open PDF: ${t.message ?: t::class.java.simpleName}"
             }
         }
     }
 
+    fun openText(uri: Uri) {
+        openJob?.cancel()
+        openJob = scope.launch {
+            try {
+                resetStateForNewDoc()
+                _docKind.value = DocKind.TEXT
+                _pdfFile.value = null
+
+                val text = ctx.contentResolver.openInputStream(uri)?.use { input ->
+                    input.bufferedReader(Charsets.UTF_8).readText()
+                }.orEmpty()
+
+                if (text.isBlank()) _lastError.value = "Could not read text file."
+                _cachedText.value = text
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                _lastError.value = "Failed to open text file: ${t.message ?: t::class.java.simpleName}"
+            }
+        }
+    }
+
     fun replacePdfFile(file: File) {
-        scope.launch {
-            _lastError.value = null
-            _cachedText.value = ""
-            _cachedCondensedText.value = ""
-            _extracting.value = false
-            _pdfFile.value = file
-            warmExtract(file)
+        openJob?.cancel()
+        openJob = scope.launch {
+            try {
+                resetStateForNewDoc()
+                _docKind.value = DocKind.PDF
+
+                // ✅ dispose current PDF UI immediately
+                _pdfFile.value = null
+
+                _pdfFile.value = file
+                getOrExtractText(file)
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                _lastError.value = "Failed to replace PDF: ${t.message ?: t::class.java.simpleName}"
+            }
         }
     }
 
     fun warmExtract(file: File) {
-        scope.launch { getOrExtractText(file) }
+        scope.launch { runCatching { getOrExtractText(file) } }
     }
 
-    // ✅ Key used for text extraction caching (existing behavior)
     fun docKey(file: File): String = cacheKey(file)
 
-    // ✅ Key used for condensed caching
     fun condensedKey(file: File, provider: ProviderId, model: String): String {
         return "${cacheKey(file)}|${provider.name}|${model.trim()}"
     }
@@ -92,26 +135,17 @@ class PdfRepository(
         if (v.isBlank()) return
 
         condensedCache[key] = v
-        while (condensedCache.size > 6) {
-            val firstKey = condensedCache.entries.first().key
-            condensedCache.remove(firstKey)
-        }
+        while (condensedCache.size > 6) condensedCache.remove(condensedCache.entries.first().key)
         _cachedCondensedText.value = v
     }
 
-    suspend fun getOrComputeCondensed(
-        key: String,
-        compute: suspend () -> String
-    ): String {
+    suspend fun getOrComputeCondensed(key: String, compute: suspend () -> String): String {
         condensedCache[key]?.let {
             _cachedCondensedText.value = it
             return it
         }
-
         val v = runCatching { compute() }.getOrDefault("").trim()
-        if (v.isNotBlank()) {
-            putCondensed(key, v)
-        }
+        if (v.isNotBlank()) putCondensed(key, v)
         return v
     }
 
@@ -147,9 +181,9 @@ class PdfRepository(
                     }
                     .trim()
 
-                if (ocrText.isBlank()) {
-                    _lastError.value = "No selectable text found. This PDF may be scanned (image-only)."
-                }
+                if (ocrText.isBlank()) _lastError.value =
+                    "No selectable text found. This PDF may be scanned (image-only)."
+
                 ocrText
             }
         } catch (t: Throwable) {
@@ -170,15 +204,19 @@ class PdfRepository(
         return txt
     }
 
-    private fun memoryCachePut(key: String, value: String) {
-        memoryCache[key] = value
-        while (memoryCache.size > 6) {
-            val firstKey = memoryCache.entries.first().key
-            memoryCache.remove(firstKey)
-        }
+    private fun resetStateForNewDoc() {
+        _lastError.value = null
+        _cachedText.value = ""
+        _cachedCondensedText.value = ""
+        _extracting.value = false
     }
 
-    private fun copyToCache(uri: Uri): File {
+    private fun memoryCachePut(key: String, value: String) {
+        memoryCache[key] = value
+        while (memoryCache.size > 6) memoryCache.remove(memoryCache.entries.first().key)
+    }
+
+    private fun copyToCachePdf(uri: Uri): File {
         val inStream = ctx.contentResolver.openInputStream(uri)
             ?: throw IllegalStateException("Cannot open input stream from Uri")
 
@@ -210,7 +248,6 @@ class PdfRepository(
                 val pages = minOf(maxPages, pageCount)
 
                 val out = StringBuilder()
-
                 for (i in 0 until pages) {
                     renderer.openPage(i).use { page ->
                         val scale = 2
@@ -231,7 +268,6 @@ class PdfRepository(
                         }
                     }
                 }
-
                 out.toString().trim()
             }
         } finally {

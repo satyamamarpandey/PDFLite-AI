@@ -46,7 +46,7 @@ class AiOrchestrator(
 
     /**
      * ✅ IMPORTANT CHANGE:
-     * - For NOVA/GROQ/OPENROUTER: baseUrl becomes WORKER_BASE_URL and apiKey is ignored.
+     * - For NOVA (micro/lite) and OPENROUTER: baseUrl becomes WORKER_BASE_URL and apiKey is ignored.
      * - For LOCAL_OPENAI_COMPAT: baseUrl comes from settings and apiKey is used.
      */
     private fun resolveConfig(s: AiSettings, apiKey: String): AiProvider {

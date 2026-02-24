@@ -1,21 +1,17 @@
-# ----------------------------
-# PDFLite AI - release shrink rules
-# ----------------------------
+# --- Kotlinx Serialization ---
+-keepclassmembers class **$$serializer { *; }
+-keepclasseswithmembers class kotlinx.serialization.** { *; }
+-keep class kotlinx.serialization.** { *; }
 
-# Keep PDFBox Android (safe; prevents R8 from stripping internal classes)
--keep class com.tom_roush.pdfbox.** { *; }
--dontwarn com.tom_roush.pdfbox.**
-
-# ML Kit (Play services / unbundled)
+# --- ML Kit Text Recognition ---
 -keep class com.google.mlkit.** { *; }
 -dontwarn com.google.mlkit.**
+-dontwarn com.google.android.gms.**
+-dontwarn com.google.android.gms.internal.**
 
-# ML Kit internal (often referenced via reflection / generated)
--keep class com.google.android.gms.internal.mlkit_** { *; }
--dontwarn com.google.android.gms.internal.mlkit_**
-
-# Kotlinx Serialization (only if you use @Serializable models)
--keepclassmembers class ** {
-    @kotlinx.serialization.Serializable *;
-}
--dontwarn kotlinx.serialization.**
+# --- PDFBox Android ---
+-dontwarn org.bouncycastle.**
+-dontwarn javax.xml.bind.**
+-keep class com.tom_roush.pdfbox.** { *; }
+-keep class com.tom_roush.harmony.awt.** { *; }
+-keep class com.tom_roush.fontbox.** { *; }

@@ -1,6 +1,8 @@
 package com.pdfliteai.settings
 
 import android.content.Context
+import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
@@ -32,10 +34,16 @@ class SettingsRepository(private val context: Context) {
     // ✅ NEW
     private val KEY_CHAT_HISTORY_LIMIT = intPreferencesKey("chat_history_limit")
 
+    // ✅ NEW: one-time migration marker for recents (URI -> URI||NAME)
+    private val KEY_RECENTS_MIGRATED_V1 = booleanPreferencesKey("recents_migrated_v1")
+
+    private val RECENT_SEP = "||"
+    private fun recentUri(entry: String): String = entry.substringBefore(RECENT_SEP).trim()
+
     val aiSettingsFlow: Flow<AiSettings> = context.dataStore.data.map { prefs ->
         val provider = runCatching {
-            ProviderId.valueOf(prefs[KEY_PROVIDER] ?: ProviderId.GROQ.name)
-        }.getOrDefault(ProviderId.GROQ)
+            ProviderId.valueOf(prefs[KEY_PROVIDER] ?: ProviderId.NOVA.name)
+        }.getOrDefault(ProviderId.NOVA)
 
         AiSettings(
             provider = provider,
@@ -63,10 +71,11 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun ensureInitialized() {
         val prefs = context.dataStore.data.first()
+
         context.dataStore.edit { p ->
             if (!prefs.contains(KEY_PROVIDER)) {
-                p[KEY_PROVIDER] = ProviderId.GROQ.name
-                p[KEY_MODEL] = defaultModel(ProviderId.GROQ)
+                p[KEY_PROVIDER] = ProviderId.NOVA.name
+                p[KEY_MODEL] = defaultModel(ProviderId.NOVA)
                 p[KEY_TEMP] = 0.2f
             }
             if (!prefs.contains(KEY_RECENTS_LIMIT)) p[KEY_RECENTS_LIMIT] = 10
@@ -77,13 +86,23 @@ class SettingsRepository(private val context: Context) {
 
             // ✅ NEW default
             if (!prefs.contains(KEY_CHAT_HISTORY_LIMIT)) p[KEY_CHAT_HISTORY_LIMIT] = 3
+
+            // ✅ NEW default
+            if (!prefs.contains(KEY_RECENTS_MIGRATED_V1)) p[KEY_RECENTS_MIGRATED_V1] = false
+        }
+
+        // ✅ one-time upgrade: convert "uri" -> "uri||displayName" when possible
+        val migrated = prefs[KEY_RECENTS_MIGRATED_V1] ?: false
+        if (!migrated) {
+            runCatching { migrateRecentsToIncludeNames() }
+            context.dataStore.edit { p -> p[KEY_RECENTS_MIGRATED_V1] = true }
         }
     }
 
     private fun defaultModel(p: ProviderId): String = when (p) {
-        ProviderId.GROQ -> "llama-3.1-8b-instant"
-        ProviderId.OPENROUTER -> "openai/gpt-4o-mini"
+        ProviderId.GROQ -> "nova-micro-v1"          // ✅ repurposed slot
         ProviderId.NOVA -> "nova-lite-v1"
+        ProviderId.OPENROUTER -> "openai/gpt-4o-mini"
         ProviderId.LOCAL_OPENAI_COMPAT -> ""
     }
 
@@ -138,16 +157,68 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { prefs ->
             val limit = (prefs[KEY_RECENTS_LIMIT] ?: 10).coerceIn(3, 10)
             val cur = decodeList(prefs[KEY_RECENTS].orEmpty())
+
+            // ✅ Dedup by URI ONLY (so "uri||name" replaces older "uri" or older "uri||oldName")
+            val uUri = recentUri(u)
             val next = buildList {
                 add(u)
-                cur.filterNot { it == u }.forEach { add(it) }
+                cur.filterNot { recentUri(it) == uUri }.forEach { add(it) }
             }.take(limit)
+
             prefs[KEY_RECENTS] = encodeList(next)
         }
     }
 
     suspend fun clearRecents() {
         context.dataStore.edit { prefs -> prefs.remove(KEY_RECENTS) }
+    }
+
+    private fun queryDisplayName(uri: Uri): String? {
+        return runCatching {
+            context.contentResolver
+                .query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { c ->
+                    val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0 && c.moveToFirst()) c.getString(idx)?.trim() else null
+                }
+        }.getOrNull().orEmpty().trim().ifBlank { null }
+    }
+
+    private suspend fun migrateRecentsToIncludeNames() {
+        val prefs = context.dataStore.data.first()
+        val cur = decodeList(prefs[KEY_RECENTS].orEmpty())
+        if (cur.isEmpty()) return
+
+        val migrated = buildList {
+            for (entry in cur) {
+                val uriStr = recentUri(entry)
+                if (uriStr.isBlank()) continue
+
+                val hasName = entry.contains(RECENT_SEP) && entry.substringAfter(RECENT_SEP).trim().isNotBlank()
+                if (hasName) {
+                    add(entry)
+                    continue
+                }
+
+                val uri = runCatching { Uri.parse(uriStr) }.getOrNull()
+                if (uri == null) {
+                    add(uriStr)
+                    continue
+                }
+
+                // If we have persisted read permission, we can usually resolve DISPLAY_NAME reliably after restart.
+                val persistedRead = runCatching {
+                    context.contentResolver.persistedUriPermissions.any { it.uri == uri && it.isReadPermission }
+                }.getOrDefault(false)
+
+                val name = if (persistedRead) queryDisplayName(uri) else null
+                add(if (name != null) "$uriStr$RECENT_SEP$name" else uriStr)
+            }
+        }
+
+        context.dataStore.edit { p ->
+            p[KEY_RECENTS] = encodeList(migrated)
+        }
     }
 
     private fun encodeList(items: List<String>): String =

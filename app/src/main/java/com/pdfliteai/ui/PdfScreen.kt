@@ -1,20 +1,24 @@
 // PdfScreen.kt
 package com.pdfliteai.ui
 
+import android.content.ContentUris
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.speech.tts.TextToSpeech
-import android.view.ScaleGestureDetector
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -28,11 +32,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -43,6 +48,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -50,6 +56,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
@@ -57,9 +64,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.input.pointer.pointerInteropFilter
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
@@ -73,6 +81,7 @@ import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import com.pdfliteai.MainActivity
 import com.pdfliteai.ai.AiOrchestrator
 import com.pdfliteai.data.ProviderId
+import com.pdfliteai.pdf.DocKind
 import com.pdfliteai.pdf.PdfEditor
 import com.pdfliteai.pdf.PdfRepository
 import com.pdfliteai.settings.SettingsViewModel
@@ -96,6 +105,7 @@ import java.net.URLDecoder
 import java.util.Locale
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlin.math.sqrt
 
 // PDFBox Android
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
@@ -111,11 +121,10 @@ import com.tom_roush.pdfbox.pdmodel.font.PDType1Font
 import com.tom_roush.pdfbox.pdmodel.graphics.state.PDExtendedGraphicsState
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import com.tom_roush.pdfbox.text.TextPosition
-import com.tom_roush.pdfbox.util.Matrix
 import com.tom_roush.pdfbox.util.Matrix.getRotateInstance
 
 private const val TTS_CHUNK_MAX = 3500
-private const val GROQ_MAX_REQUEST_CHARS = 6000
+private const val TAG_PDF_SCREEN = "PdfScreen"
 
 @Composable
 fun PdfScreen(
@@ -132,6 +141,7 @@ fun PdfScreen(
 
     LaunchedEffect(Unit) { runCatching { PDFBoxResourceLoader.init(ctx) } }
 
+    val docKind by repo.docKind.collectAsState()
     val pdfFile by repo.pdfFile.collectAsState()
     val cachedText by repo.cachedText.collectAsState()
     val repoErr by repo.lastError.collectAsState()
@@ -156,10 +166,10 @@ fun PdfScreen(
     var pageCount by remember { mutableIntStateOf(0) }
     var pageIndex by remember { mutableIntStateOf(0) }
 
-    // ✅ Pinch zoom only
+    // ✅ Pinch + double-tap zoom
     var zoomScale by remember { mutableFloatStateOf(1f) }
 
-    var docDisplayName by remember { mutableStateOf("document.pdf") }
+    var docDisplayName by remember { mutableStateOf("document") }
 
     val history = remember { mutableStateListOf<ChatMessage>() }
     val editor = remember { PdfEditor() }
@@ -177,6 +187,9 @@ fun PdfScreen(
     var ttsReady by remember { mutableStateOf(false) }
     var ttsSpeaking by remember { mutableStateOf(false) }
     var ttsJob: Job? by remember { mutableStateOf(null) }
+
+    // ✅ prevents overlapping opens (and UI thread freezes)
+    var openJob: Job? by remember { mutableStateOf(null) }
 
     DisposableEffect(Unit) {
         lateinit var engine: TextToSpeech
@@ -216,51 +229,118 @@ fun PdfScreen(
         return if (n.isBlank()) u else "$u$recentSep$n"
     }
 
-    fun resolveDisplayName(uriStr: String): String {
+    // ✅ keep as local functions (no 'private' inside composable)
+    fun queryDisplayName(uri: Uri): String? {
         return runCatching {
-            val uri = uriStr.toUri()
             ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
                 ?.use { c ->
                     val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if (idx >= 0 && c.moveToFirst()) {
-                        val name = c.getString(idx)?.trim().orEmpty()
-                        if (name.isNotBlank()) return@runCatching name
-                    }
+                    if (idx >= 0 && c.moveToFirst()) c.getString(idx)?.trim() else null
                 }
-            val seg = (uri.lastPathSegment ?: uriStr).trim()
-            val decoded = runCatching { URLDecoder.decode(seg, "UTF-8") }.getOrDefault(seg)
-            decoded.ifBlank { uriStr }
-        }.getOrDefault(uriStr)
+        }.getOrNull().orEmpty().trim().ifBlank { null }
+    }
+
+    fun resolveDisplayName(uri: Uri): String {
+        // 1) Standard query
+        queryDisplayName(uri)?.let { return it }
+
+        // 2) Downloads provider fallback (fixes "document:34" on many devices)
+        val isDoc = runCatching { DocumentsContract.isDocumentUri(ctx, uri) }.getOrDefault(false)
+        if (isDoc && uri.authority == "com.android.providers.downloads.documents") {
+            val docId = runCatching { DocumentsContract.getDocumentId(uri) }.getOrDefault("")
+            val id = docId.substringAfterLast(':').toLongOrNull() ?: docId.toLongOrNull()
+            if (id != null) {
+                val dl = ContentUris.withAppendedId(
+                    Uri.parse("content://downloads/public_downloads"),
+                    id
+                )
+                queryDisplayName(dl)?.let { return it }
+            }
+        }
+
+        // 3) Last resort: decoded lastPathSegment
+        val seg = (uri.lastPathSegment ?: uri.toString()).trim()
+        val decoded = runCatching { URLDecoder.decode(seg, "UTF-8") }.getOrDefault(seg)
+        return decoded.ifBlank { uri.toString() }
     }
 
     fun displayNameForRecent(entry: String): String {
         val (uriStr, savedName) = unpackRecent(entry)
-        return savedName?.takeIf { it.isNotBlank() } ?: resolveDisplayName(uriStr)
+        return savedName?.takeIf { it.isNotBlank() } ?: resolveDisplayName(uriStr.toUri())
+    }
+
+    fun isPdfByExtension(uri: Uri): Boolean = uri.toString().lowercase().contains(".pdf")
+    fun isTextByExtension(uri: Uri): Boolean {
+        val u = uri.toString().lowercase()
+        return u.endsWith(".txt") || u.endsWith(".log") || u.endsWith(".md") || u.endsWith(".csv")
+    }
+
+    /**
+     * ✅ Persist permission correctly:
+     * takePersistableUriPermission ONLY accepts READ and/or WRITE (NOT PERSISTABLE flag).
+     */
+    fun tryTakePersistableRead(uri: Uri) {
+        runCatching {
+            ctx.contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        }.onFailure {
+            // This can fail for some URIs (e.g., ACTION_VIEW temp grants). Not fatal.
+            Log.w(TAG_PDF_SCREEN, "Persistable permission not granted: ${it.message}")
+        }
+    }
+
+    /**
+     * ✅ PDF + TEXT only
+     * ✅ Open on background thread to avoid ANR/"keeps stopping"
+     * ✅ Don’t add to recents unless open succeeded
+     */
+    fun openAny(uri: Uri, mimeHint: String? = null) {
+        val uriStr = uri.toString()
+        val mime = (mimeHint ?: ctx.contentResolver.getType(uri)).orEmpty().lowercase()
+        val name = resolveDisplayName(uri)
+        docDisplayName = name
+
+        // new doc session (UI state)
+        docSessionId += 1
+        searchHighlightActive = false
+        cleanPdfFile = null
+        error = null
+
+        // cancel any previous open work
+        openJob?.cancel()
+        openJob = cs.launch {
+            val ok = runCatching {
+                // ensure PDFBox resources are initialized before any PDFBox usage
+                runCatching { PDFBoxResourceLoader.init(ctx) }
+
+                withContext(Dispatchers.IO) {
+                    when {
+                        mime == "application/pdf" || isPdfByExtension(uri) -> repo.openPdf(uri)
+                        mime.startsWith("text/") || isTextByExtension(uri) -> repo.openText(uri)
+                        else -> throw IllegalStateException("Unsupported file type. Please open a PDF or Text file.")
+                    }
+                }
+            }.onFailure {
+                val msg = it.message ?: it::class.java.simpleName
+                error = msg
+                Log.e(TAG_PDF_SCREEN, "openAny failed: $msg", it)
+            }.isSuccess
+
+            if (!ok) return@launch
+
+            // only after successful open
+            vm.addRecent(packRecent(uriStr, name))
+            botOpen = reader.autoOpenAi
+        }
     }
 
     // "Open with"
     LaunchedEffect(initialOpenUri, initialOpenMime) {
         val uri = initialOpenUri ?: return@LaunchedEffect
-        val mime = (initialOpenMime ?: ctx.contentResolver.getType(uri)).orEmpty()
-        val isPdfMime = mime.equals("application/pdf", ignoreCase = true)
-        val isPdfByName = uri.toString().lowercase().contains(".pdf")
-
-        if (!isPdfMime && !isPdfByName) {
-            error = "Unsupported file type. Please open a PDF."
-            MainActivity.clearPendingOpen()
-            return@LaunchedEffect
-        }
-
-        docSessionId += 1
-        searchHighlightActive = false
-        cleanPdfFile = null
-
-        val name = resolveDisplayName(uri.toString())
-        docDisplayName = name
-        repo.openPdf(uri)
-
-        vm.addRecent(packRecent(uri.toString(), name))
-        botOpen = reader.autoOpenAi
+        tryTakePersistableRead(uri)
+        openAny(uri, mimeHint = initialOpenMime)
         MainActivity.clearPendingOpen()
     }
 
@@ -268,31 +348,14 @@ fun PdfScreen(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         if (uri != null) {
-            runCatching {
-                ctx.contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
-            }
-
-            docSessionId += 1
-            searchHighlightActive = false
-            cleanPdfFile = null
-
-            val name = resolveDisplayName(uri.toString())
-            docDisplayName = name
-            repo.openPdf(uri)
-
-            vm.addRecent(packRecent(uri.toString(), name))
-            botOpen = reader.autoOpenAi
+            tryTakePersistableRead(uri)
+            openAny(uri)
         }
     }
 
-    // on file change
+    // on file change (PDF only)
     LaunchedEffect(pdfFile) {
         val f = pdfFile ?: return@LaunchedEffect
-        repo.warmExtract(f)
-        error = null
         if (!searchHighlightActive) cleanPdfFile = f
     }
 
@@ -302,6 +365,14 @@ fun PdfScreen(
         question = ""
         history.clear()
         zoomScale = 1f
+        pageCount = 0
+
+        // stop TTS if a new doc is opened
+        runCatching {
+            ttsJob?.cancel()
+            tts?.stop()
+            ttsSpeaking = false
+        }
     }
 
     fun addToHistory(role: ChatRole, text: String) {
@@ -310,77 +381,29 @@ fun PdfScreen(
         history.add(ChatMessage(role = role, text = t))
     }
 
-    // Pre-condense (Groq)
-    var lastPreCondenseKey by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(pdfFile, cachedText, s.provider, s.model) {
-        val f = pdfFile ?: return@LaunchedEffect
-        if (s.provider != ProviderId.GROQ) return@LaunchedEffect
-
-        val full = cachedText.trim()
-        if (full.isBlank()) return@LaunchedEffect
-
-        val apiKey = vm.getApiKey(s.provider).trim()
-        if (apiKey.isBlank()) return@LaunchedEffect
-
-        val k = repo.condensedKey(f, s.provider, s.model)
-        if (k == lastPreCondenseKey) return@LaunchedEffect
-
-        if (repo.hasCondensed(k) || ai.hasCondensed(k)) {
-            lastPreCondenseKey = k
-            return@LaunchedEffect
-        }
-
-        lastPreCondenseKey = k
-
-        cs.launch {
-            runCatching {
-                val condensed = ai.condenseDocument(
-                    s = s,
-                    apiKey = apiKey,
-                    cacheKey = k,
-                    fullText = full,
-                    maxRequestChars = GROQ_MAX_REQUEST_CHARS,
-                    maxDocChars = GROQ_MAX_REQUEST_CHARS
-                )
-                if (condensed.isNotBlank()) repo.putCondensed(k, condensed)
-            }.onFailure {
-                lastPreCondenseKey = null
-            }
-        }
-    }
-
     suspend fun runAsk(qOverride: String? = null) {
-        val f = pdfFile ?: throw IllegalStateException("Open a PDF first.")
-        val full = repo.getOrExtractText(f).trim()
-        if (full.isBlank()) throw IllegalStateException("Could not extract text from PDF.")
+        val full = when (docKind) {
+            DocKind.PDF -> {
+                val f = pdfFile ?: throw IllegalStateException("Open a PDF first.")
+                repo.getOrExtractText(f).trim()
+            }
+            DocKind.TEXT -> cachedText.trim()
+            else -> throw IllegalStateException("Open a document first.")
+        }
+
+        if (full.isBlank()) throw IllegalStateException("Could not extract text from document.")
 
         val q = (qOverride ?: question).trim()
         if (q.isBlank()) throw IllegalStateException("Type a question or use a quick prompt.")
 
         val key = vm.getApiKey(s.provider).trim()
-        // ✅ Only require a key when using Local OpenAI Compat.
-        // For Groq/OpenRouter/Nova, keys are stored in Cloudflare Worker secrets.
         if (s.provider == ProviderId.LOCAL_OPENAI_COMPAT && key.isBlank()) {
             throw IllegalStateException("Missing API key for Local provider. Please set it in Settings.")
         }
 
-        val docForAi = if (s.provider == ProviderId.GROQ) {
-            val ck = repo.condensedKey(f, s.provider, s.model)
-            repo.getOrComputeCondensed(ck) {
-                ai.condenseDocument(
-                    s = s,
-                    apiKey = key,
-                    cacheKey = ck,
-                    fullText = full,
-                    maxRequestChars = GROQ_MAX_REQUEST_CHARS,
-                    maxDocChars = GROQ_MAX_REQUEST_CHARS
-                )
-            }.ifBlank { full }
-        } else full
-
         val prompt = buildAskPromptWithinLimit(
             provider = s.provider,
-            docText = docForAi,
+            docText = full,
             question = q
         )
 
@@ -415,31 +438,38 @@ fun PdfScreen(
         }
     }
 
-    fun toggleReadAloud() {
+    // ✅ explicit TTS controls (no toggle desync)
+    fun stopReadAloud() {
+        val engine = tts
+        if (engine == null) {
+            ttsSpeaking = false
+            return
+        }
+        runCatching {
+            ttsJob?.cancel()
+            engine.stop()
+        }
+        ttsSpeaking = false
+    }
+
+    fun startReadAloud() {
         val text = cachedText.trim()
         val engine = tts
         if (engine == null || !ttsReady) {
             error = "Text-to-Speech not ready."
             return
         }
-
-        if (ttsSpeaking) {
-            ttsJob?.cancel()
-            engine.stop()
-            ttsSpeaking = false
-            return
-        }
-
         if (text.isBlank()) {
             error = "No extracted text to read."
             return
         }
+        if (ttsSpeaking) return
 
-        ttsJob?.cancel()
-        engine.stop()
+        stopReadAloud()
+
         ttsSpeaking = true
-
         val chunks = chunkText(text)
+
         ttsJob = cs.launch(Dispatchers.Main) {
             for ((i, c) in chunks.withIndex()) {
                 if (!isActive || !ttsSpeaking) break
@@ -490,7 +520,17 @@ fun PdfScreen(
             val bmpW = ((pageW / 72f) * dpi).toInt().coerceAtLeast(1)
             val bmpH = ((pageH / 72f) * dpi).toInt().coerceAtLeast(1)
 
-            val bitmap = createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
+            val maxPixels = 5_500_000L
+            var w = bmpW
+            var h = bmpH
+            val px = w.toLong() * h.toLong()
+            if (px > maxPixels) {
+                val factor = sqrt(maxPixels.toDouble() / px.toDouble()).toFloat()
+                w = (w * factor).toInt().coerceAtLeast(1)
+                h = (h * factor).toInt().coerceAtLeast(1)
+            }
+
+            val bitmap = createBitmap(w, h, Bitmap.Config.ARGB_8888)
             page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
 
             val image = InputImage.fromBitmap(bitmap, 0)
@@ -534,17 +574,17 @@ fun PdfScreen(
 
             val out = ArrayList<PDRectangle>(rectanglesPx.size)
             for (r in rectanglesPx) {
-                val left = (r.left.toFloat() / bmpW) * pageW
-                val right = (r.right.toFloat() / bmpW) * pageW
+                val left = (r.left.toFloat() / w) * pageW
+                val right = (r.right.toFloat() / w) * pageW
 
-                val topFromTop = (r.top.toFloat() / bmpH) * pageH
-                val bottomFromTop = (r.bottom.toFloat() / bmpH) * pageH
+                val topFromTop = (r.top.toFloat() / h) * pageH
+                val bottomFromTop = (r.bottom.toFloat() / h) * pageH
 
                 val y = pageH - bottomFromTop
-                val w = (right - left).coerceAtLeast(1f)
-                val h = (bottomFromTop - topFromTop).coerceAtLeast(1f)
+                val ww = (right - left).coerceAtLeast(1f)
+                val hh = (bottomFromTop - topFromTop).coerceAtLeast(1f)
 
-                out.add(PDRectangle(left, y, w, h))
+                out.add(PDRectangle(left, y, ww, hh))
             }
             out
         } catch (_: Throwable) {
@@ -713,8 +753,8 @@ fun PdfScreen(
         )
     )
 
-    // Scroll state + visible page
-    val pdfListState = rememberLazyListState()
+    // Scroll state + visible page (PDF only)
+    val pdfListState = remember(docSessionId) { LazyListState() }
     val firstVisible by remember { derivedStateOf { pdfListState.firstVisibleItemIndex } }
     LaunchedEffect(firstVisible, pageCount) {
         if (pageCount > 0) pageIndex = firstVisible.coerceIn(0, pageCount - 1)
@@ -731,6 +771,9 @@ fun PdfScreen(
         }
     }
 
+    val hasAnyDoc = docKind != DocKind.NONE
+    val hasPdfDoc = (docKind == DocKind.PDF && pdfFile != null)
+
     Box(Modifier.fillMaxSize()) {
         Image(
             painter = painterResource(id = com.pdfliteai.R.drawable.aurora_header),
@@ -746,9 +789,12 @@ fun PdfScreen(
         Scaffold(
             topBar = {
                 PdfTopBar(
-                    hasDoc = pdfFile != null,
-                    onOpen = { picker.launch(arrayOf("application/pdf")) },
-                    onTools = { toolsOpen = true },
+                    hasDoc = hasAnyDoc,
+                    onOpen = { picker.launch(arrayOf("application/pdf", "text/*")) },
+                    onTools = {
+                        if (hasPdfDoc) toolsOpen = true
+                        else error = "Tools are available for PDFs only."
+                    },
                     onSettings = onOpenSettings
                 )
             },
@@ -760,100 +806,132 @@ fun PdfScreen(
                     .padding(pad)
                     .fillMaxSize()
             ) {
-                if (pdfFile != null) {
+                when (docKind) {
+                    DocKind.PDF -> {
+                        if (pdfFile != null) {
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth()
+                            ) {
+                                key(pdfFile!!.absolutePath) {
+                                    PdfScrollViewInternal(
+                                        pdfFile = pdfFile!!,
+                                        listState = pdfListState,
+                                        modifier = Modifier.fillMaxSize(),
+                                        onPageCount = { pageCount = it },
+                                        zoomScale = zoomScale,
+                                        onZoomScaleChange = { z -> zoomScale = z.coerceIn(1f, 4f) }
+                                    )
+                                }
 
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth()
-                    ) {
-                        // ✅ Full-width pages + true fit-to-width rendering (no left/right cut)
-                        PdfScrollViewInternal(
-                            pdfFile = pdfFile as File,
-                            listState = pdfListState,
-                            modifier = Modifier.fillMaxSize(),
-                            onPageCount = { pageCount = it },
-                            zoomScale = zoomScale,
-                            onZoomScaleChange = { z -> zoomScale = z.coerceIn(1f, 4f) }
-                        )
-
-                        // Overlay pill (does NOT consume touch)
-                        PageIndicatorPill(
-                            visible = showPagePill,
-                            pageIndex0 = pageIndex,
-                            pageCount = pageCount
-                        )
+                                PageIndicatorPill(
+                                    visible = showPagePill,
+                                    pageIndex0 = pageIndex,
+                                    pageCount = pageCount
+                                )
+                            }
+                        } else {
+                            Box(Modifier.fillMaxSize()) {
+                                Column(
+                                    modifier = Modifier
+                                        .align(Alignment.Center)
+                                        .padding(horizontal = 18.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                                ) {
+                                    GlowPrimaryButton(
+                                        text = "Open File",
+                                        onClick = { picker.launch(arrayOf("application/pdf", "text/*")) }
+                                    )
+                                }
+                            }
+                        }
                     }
 
-                } else {
-                    Box(Modifier.fillMaxSize()) {
-                        Column(
+                    DocKind.TEXT -> {
+                        val scroll = rememberScrollState()
+                        Surface(
                             modifier = Modifier
-                                .align(Alignment.Center)
-                                .padding(horizontal = 18.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                                .padding(horizontal = 14.dp, vertical = 12.dp)
+                                .fillMaxSize(),
+                            shape = RoundedCornerShape(18.dp),
+                            color = Color.White.copy(alpha = 0.05f),
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f)),
+                            shadowElevation = 8.dp
                         ) {
-                            GlowPrimaryButton(
-                                text = "Open PDF",
-                                onClick = { picker.launch(arrayOf("application/pdf")) }
-                            )
-
-                            Surface(
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(22.dp),
-                                color = Color.Black.copy(alpha = 0.44f),
-                                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
-                                shadowElevation = 10.dp
+                            Box(
+                                modifier = Modifier
+                                    .verticalScroll(scroll)
+                                    .padding(14.dp)
                             ) {
-                                Column(Modifier.padding(16.dp)) {
+                                SelectionContainer {
                                     Text(
-                                        "Recent",
-                                        style = MaterialTheme.typography.titleSmall,
-                                        color = Color.White
+                                        text = cachedText.ifBlank { "No text found in this file." },
+                                        color = Color.White.copy(alpha = 0.92f),
+                                        style = MaterialTheme.typography.bodyMedium
                                     )
-                                    Spacer(Modifier.padding(top = 8.dp))
+                                }
+                            }
+                        }
+                    }
 
-                                    val list = recents.take(reader.recentsLimit)
-                                    if (list.isEmpty()) {
+                    DocKind.NONE -> {
+                        Box(Modifier.fillMaxSize()) {
+                            Column(
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .padding(horizontal = 18.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(14.dp)
+                            ) {
+                                GlowPrimaryButton(
+                                    text = "Open File",
+                                    onClick = { picker.launch(arrayOf("application/pdf", "text/*")) }
+                                )
+
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(22.dp),
+                                    color = Color.Black.copy(alpha = 0.44f),
+                                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
+                                    shadowElevation = 10.dp
+                                ) {
+                                    Column(Modifier.padding(16.dp)) {
                                         Text(
-                                            "No recent files yet.",
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = Color.White.copy(alpha = 0.70f)
+                                            "Recent",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            color = Color.White
                                         )
-                                    } else {
-                                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                            list.forEach { entry ->
-                                                val (uriStr, savedName) = unpackRecent(entry)
-                                                val name = savedName ?: displayNameForRecent(entry)
+                                        Spacer(Modifier.padding(top = 8.dp))
 
-                                                Text(
-                                                    text = name,
-                                                    style = MaterialTheme.typography.bodyMedium,
-                                                    color = Color.White,
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .clickable {
-                                                            val uri = uriStr.toUri()
+                                        val list = recents.take(reader.recentsLimit)
+                                        if (list.isEmpty()) {
+                                            Text(
+                                                "No recent files yet.",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = Color.White.copy(alpha = 0.70f)
+                                            )
+                                        } else {
+                                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                                list.forEach { entry ->
+                                                    val (uriStr, savedName) = unpackRecent(entry)
+                                                    val name = savedName ?: displayNameForRecent(entry)
 
-                                                            runCatching {
-                                                                ctx.contentResolver.takePersistableUriPermission(
-                                                                    uri,
-                                                                    Intent.FLAG_GRANT_READ_URI_PERMISSION
-                                                                )
+                                                    Text(
+                                                        text = name,
+                                                        style = MaterialTheme.typography.bodyMedium,
+                                                        color = Color.White,
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .clickable {
+                                                                val uri = uriStr.toUri()
+                                                                tryTakePersistableRead(uri)
+                                                                openAny(uri)
                                                             }
-
-                                                            docSessionId += 1
-                                                            searchHighlightActive = false
-                                                            cleanPdfFile = null
-
-                                                            docDisplayName = name
-                                                            repo.openPdf(uri)
-                                                            vm.addRecent(packRecent(uriStr, name))
-                                                            botOpen = reader.autoOpenAi
-                                                        }
-                                                        .padding(vertical = 6.dp)
-                                                )
+                                                            .padding(vertical = 6.dp)
+                                                    )
+                                                }
                                             }
                                         }
                                     }
@@ -916,7 +994,7 @@ fun PdfScreen(
             )
 
             ToolsSheetV2(
-                open = toolsOpen,
+                open = toolsOpen && hasPdfDoc,
                 onClose = { toolsOpen = false },
 
                 pdfFile = pdfFile,
@@ -930,7 +1008,9 @@ fun PdfScreen(
                 searchHasHighlights = searchHighlightActive,
                 onClearSearchHighlights = { clearSearchHighlights() },
 
-                onReadAloudToggle = { toggleReadAloud() },
+                isReadingAloud = ttsSpeaking,
+                onReadAloudStart = { startReadAloud() },
+                onReadAloudStop = { stopReadAloud() },
 
                 onDeletePageNumber = { pageNum1Based -> deletePageAt(pageNum1Based - 1) },
                 onCompress = { compressPdf() },
@@ -939,7 +1019,9 @@ fun PdfScreen(
                 onSecurePdfOwnerOnly = { owner -> securePdf(owner) },
 
                 onGoToPage1Based = { page1 ->
-                    val idx0 = (page1 - 1).coerceIn(0, (pageCount - 1).coerceAtLeast(0))
+                    val max = (pageCount - 1).coerceAtLeast(0)
+                    if (pageCount <= 0) return@ToolsSheetV2
+                    val idx0 = (page1 - 1).coerceIn(0, max)
                     cs.launch { runCatching { pdfListState.animateScrollToItem(idx0) } }
                 },
 
@@ -951,9 +1033,6 @@ fun PdfScreen(
 
 /* =========================================================
    ✅ Scrollable PDF implementation
-   - Pinch zoom only via ScaleGestureDetector
-   - ✅ Pages are true full-width (no horizontal padding)
-   - ✅ Fit-to-width uses bounded viewport width (no left/right cut)
    ========================================================= */
 
 private class RendererHolder(
@@ -969,7 +1048,7 @@ private class RendererHolder(
 @Composable
 private fun PdfScrollViewInternal(
     pdfFile: File,
-    listState: androidx.compose.foundation.lazy.LazyListState,
+    listState: LazyListState,
     modifier: Modifier = Modifier,
     onPageCount: (Int) -> Unit,
     zoomScale: Float,
@@ -990,24 +1069,40 @@ private fun PdfScrollViewInternal(
         onPageCount(count)
 
         onDispose {
-            holder?.close()
-            holder = null
+            runCatching { h?.close() }
+            if (holder == h) holder = null
         }
     }
 
-    val pages = remember(count) { (0 until count).toList() }
+    val zoomNow by rememberUpdatedState(zoomScale)
+
+    val gestureMod =
+        Modifier
+            .pointerInput(Unit) {
+                detectTransformGestures { _, _, zoom, _ ->
+                    val next = (zoomNow * zoom).coerceIn(1f, 4f)
+                    onZoomScaleChange(next)
+                }
+            }
+            .pointerInput(zoomScale) {
+                detectTapGestures(
+                    onDoubleTap = {
+                        val next = if (zoomScale < 1.5f) 2f else 1f
+                        onZoomScaleChange(next)
+                    }
+                )
+            }
 
     LazyColumn(
         state = listState,
-        modifier = modifier.pinchZoomOnlyInterop { factor ->
-            val next = (zoomScale * factor).coerceIn(1f, 4f)
-            onZoomScaleChange(next)
-        },
+        modifier = modifier.then(gestureMod),
         verticalArrangement = Arrangement.spacedBy(14.dp),
-        // ✅ no horizontal content padding => full width
         contentPadding = PaddingValues(bottom = 10.dp)
     ) {
-        items(items = pages, key = { it }) { idx ->
+        items(
+            count = count,
+            key = { idx -> idx }
+        ) { idx ->
             PdfPageItemInternal(holder = holder, pageIndex = idx, zoomScale = zoomScale)
         }
     }
@@ -1019,30 +1114,8 @@ private fun PdfPageItemInternal(
     pageIndex: Int,
     zoomScale: Float
 ) {
-    val bmpState = produceState<Bitmap?>(initialValue = null, holder, pageIndex) {
-        value = withContext(Dispatchers.IO) {
-            if (holder == null) return@withContext null
-            runCatching {
-                val r = holder.renderer
-                if (pageIndex !in 0 until r.pageCount) return@runCatching null
-
-                r.openPage(pageIndex).use { page ->
-                    val scale = 2.0f
-                    val w = (page.width * scale).toInt().coerceAtLeast(1)
-                    val h = (page.height * scale).toInt().coerceAtLeast(1)
-
-                    val bmp = createBitmap(w, h, Bitmap.Config.ARGB_8888)
-                    bmp.eraseColor(android.graphics.Color.WHITE)
-                    page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                    bmp
-                }
-            }.getOrNull()
-        }
-    }
-
     val hScroll = rememberScrollState()
 
-    // ✅ When user zooms back to 1x, snap horizontal scroll back so nothing looks "cut"
     LaunchedEffect(zoomScale) {
         if (zoomScale <= 1.01f && hScroll.value != 0) {
             runCatching { hScroll.animateScrollTo(0) }
@@ -1050,23 +1123,57 @@ private fun PdfPageItemInternal(
     }
 
     Surface(
-        modifier = Modifier
-            .fillMaxWidth(), // ✅ FULL WIDTH (removed horizontal padding)
+        modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(18.dp),
         color = Color.White.copy(alpha = 0.03f),
         border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f)),
         shadowElevation = 8.dp
     ) {
-        val bmp = bmpState.value
-        if (bmp != null) {
-            // ✅ Critical fix:
-            // Use a bounded viewport (BoxWithConstraints) and put horizontalScroll INSIDE it.
-            // This guarantees "fit-to-width" uses real screen width and doesn't get clipped.
-            BoxWithConstraints(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Color.White)
-            ) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color.White)
+        ) {
+            val density = LocalDensity.current
+            val targetWpx = with(density) { maxWidth.roundToPx().coerceAtLeast(1) }
+
+            val bmpState = produceState<Bitmap?>(initialValue = null, holder, pageIndex, targetWpx) {
+                value = withContext(Dispatchers.IO) {
+                    if (holder == null) return@withContext null
+                    runCatching {
+                        val r = holder.renderer
+                        if (pageIndex !in 0 until r.pageCount) return@runCatching null
+
+                        r.openPage(pageIndex).use { page ->
+                            val baseW = page.width.coerceAtLeast(1)
+                            val baseH = page.height.coerceAtLeast(1)
+
+                            var scale = (targetWpx.toFloat() / baseW.toFloat()) * 1.35f
+                            scale = scale.coerceIn(1f, 2f)
+
+                            var w = (baseW * scale).toInt().coerceAtLeast(1)
+                            var h = (baseH * scale).toInt().coerceAtLeast(1)
+
+                            val maxPixels = 6_000_000L
+                            val px = w.toLong() * h.toLong()
+                            if (px > maxPixels) {
+                                val factor = sqrt(maxPixels.toDouble() / px.toDouble()).toFloat()
+                                w = (w * factor).toInt().coerceAtLeast(1)
+                                h = (h * factor).toInt().coerceAtLeast(1)
+                            }
+
+                            val bmp = createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                            bmp.eraseColor(android.graphics.Color.WHITE)
+                            page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                            bmp
+                        }
+                    }.getOrNull()
+                }
+            }
+
+            val bmp = bmpState.value
+
+            if (bmp != null) {
                 val ratio = bmp.width.toFloat() / bmp.height.toFloat()
                 val viewportW = maxWidth
                 val contentW = viewportW * zoomScale
@@ -1085,23 +1192,18 @@ private fun PdfPageItemInternal(
                         contentScale = ContentScale.FillWidth
                     )
                 }
-            }
-        } else {
-            Box(Modifier.padding(16.dp)) {
-                Text(
-                    "Rendering page ${pageIndex + 1}…",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Color.White.copy(alpha = 0.70f)
-                )
+            } else {
+                Box(Modifier.padding(16.dp)) {
+                    Text(
+                        "Rendering page ${pageIndex + 1}…",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.White.copy(alpha = 0.70f)
+                    )
+                }
             }
         }
     }
 }
-
-/* -----------------------------
-   ✅ Page indicator pill (middle-right edge, only while scrolling)
-   - DOES NOT consume touch
------------------------------- */
 
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
@@ -1115,8 +1217,7 @@ private fun BoxScope.PageIndicatorPill(
     Surface(
         modifier = Modifier
             .align(Alignment.CenterEnd)
-            .padding(end = 8.dp)
-            .pointerInteropFilter { false }, // ✅ do not block scroll/zoom
+            .padding(end = 8.dp),
         shape = RoundedCornerShape(999.dp),
         color = Color.Black.copy(alpha = 0.50f),
         border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
@@ -1130,35 +1231,6 @@ private fun BoxScope.PageIndicatorPill(
         )
     }
 }
-
-/* -----------------------------
-   ✅ Pinch-only zoom (no Compose pointer APIs that break on your version)
------------------------------- */
-
-@OptIn(ExperimentalComposeUiApi::class)
-@Composable
-private fun Modifier.pinchZoomOnlyInterop(onScaleFactor: (Float) -> Unit): Modifier {
-    val ctx = LocalContext.current
-    val detector = remember {
-        ScaleGestureDetector(ctx, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
-            override fun onScale(detector: ScaleGestureDetector): Boolean {
-                val f = detector.scaleFactor
-                if (f.isFinite() && f > 0f) onScaleFactor(f)
-                return true
-            }
-        })
-    }
-
-    return this.pointerInteropFilter { ev ->
-        detector.onTouchEvent(ev)
-        // consume ONLY when multi-touch is happening so scroll isn't blocked
-        (ev.pointerCount > 1) || detector.isInProgress
-    }
-}
-
-/* -----------------------------
-   Helpers (UNCHANGED behavior)
------------------------------- */
 
 private fun chunkText(s: String, max: Int = TTS_CHUNK_MAX): List<String> {
     if (s.length <= max) return listOf(s)
@@ -1187,25 +1259,12 @@ private fun buildAskPromptWithinLimit(
     question: String
 ): String {
     val q = question.trim()
-    var doc = docText.trim()
-
-    val head = "You are a helpful assistant. Answer using the provided text only.\n\nDOCUMENT TEXT:\n"
+    val doc = docText.trim()
+    val head =
+        "You are a helpful assistant (provider: ${provider.name}). " +
+                "Answer using the provided text only.\n\nDOCUMENT TEXT:\n"
     val mid = "\n\nUSER QUESTION:\n"
-
-    fun build(d: String) = head + d + mid + q
-
-    if (provider != ProviderId.GROQ) return build(doc)
-
-    val limit = GROQ_MAX_REQUEST_CHARS
-    var prompt = build(doc)
-    if (prompt.length <= limit) return prompt
-
-    val overhead = head.length + mid.length + q.length
-    val allowedDoc = (limit - overhead).coerceAtLeast(0)
-    doc = if (doc.length <= allowedDoc) doc else doc.take(allowedDoc)
-    prompt = build(doc)
-
-    return if (prompt.length <= limit) prompt else prompt.take(limit)
+    return head + doc + mid + q
 }
 
 /**

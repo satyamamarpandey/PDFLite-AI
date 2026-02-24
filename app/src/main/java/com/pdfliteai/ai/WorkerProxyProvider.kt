@@ -23,7 +23,7 @@ class WorkerProxyProvider(
 
         val providerStr = when (cfg.provider) {
             ProviderId.NOVA -> "nova"
-            ProviderId.GROQ -> "groq"
+            ProviderId.GROQ -> "nova" // ✅ Groq slot now uses Nova endpoint
             ProviderId.OPENROUTER -> "openrouter"
             ProviderId.LOCAL_OPENAI_COMPAT -> "openrouter" // shouldn't happen here
         }

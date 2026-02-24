@@ -82,8 +82,10 @@ fun ToolsSheetV2(
     searchHasHighlights: Boolean,
     onClearSearchHighlights: () -> Unit,
 
-    // Read aloud toggle
-    onReadAloudToggle: () -> Unit,
+    // Read aloud
+    isReadingAloud: Boolean,
+    onReadAloudStart: () -> Unit,
+    onReadAloudStop: () -> Unit,
 
     onDeletePageNumber: (Int) -> Unit,
     onCompress: suspend () -> File,
@@ -316,16 +318,33 @@ fun ToolsSheetV2(
 
                         // 2) Read Loud
                         SectionTitle("Read PDF Loud")
-                        Button(
-                            onClick = onReadAloudToggle,
-                            enabled = hasDoc && docText.isNotBlank() && !busy,
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = Color.White.copy(alpha = 0.12f),
-                                contentColor = Color.White
-                            ),
-                            shape = RoundedCornerShape(14.dp)
-                        ) { Text("Read Aloud / Stop") }
+
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Button(
+                                onClick = onReadAloudStart,
+                                enabled = hasDoc && docText.isNotBlank() && !busy && !isReadingAloud,
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.primary,
+                                    contentColor = Color.White
+                                ),
+                                shape = RoundedCornerShape(14.dp)
+                            ) { Text("Read Aloud") }
+
+                            Button(
+                                onClick = onReadAloudStop,
+                                enabled = hasDoc && !busy && isReadingAloud,
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color.White.copy(alpha = 0.12f),
+                                    contentColor = Color.White
+                                ),
+                                shape = RoundedCornerShape(14.dp)
+                            ) { Text("Stop") }
+                        }
 
                         Divider(color = Color.White.copy(alpha = 0.10f))
 

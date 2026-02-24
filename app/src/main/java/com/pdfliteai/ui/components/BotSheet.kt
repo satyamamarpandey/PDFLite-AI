@@ -1,5 +1,6 @@
 package com.pdfliteai.ui.components
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -7,9 +8,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -27,6 +30,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.ModalBottomSheetProperties
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -51,6 +55,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -59,6 +65,8 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.pdfliteai.data.ProviderId
 import kotlinx.coroutines.launch
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.sp
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -97,15 +105,40 @@ fun BotSheet(
         if (messages.size <= historyChatsLimit) messages else messages.takeLast(historyChatsLimit)
     }
 
-    LaunchedEffect(shown.size) {
-        if (shown.isNotEmpty()) listState.animateScrollToItem(shown.lastIndex)
+    LaunchedEffect(open, shown.size) {
+        if (!open) return@LaunchedEffect
+        if (shown.isNotEmpty()) {
+            runCatching { listState.scrollToItem(shown.lastIndex) }
+        }
+    }
+
+    // ✅ IME (keyboard) handling: hide keyboard first (don’t close sheet)
+    val keyboard = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+    val density = LocalDensity.current
+    val imeVisible = WindowInsets.ime.getBottom(density) > 0
+
+    BackHandler(enabled = imeVisible) {
+        keyboard?.hide()
+        focusManager.clearFocus()
     }
 
     ModalBottomSheet(
-        onDismissRequest = onClose,
+        onDismissRequest = {
+            // ✅ If keyboard is open, close keyboard only; keep sheet open
+            if (imeVisible) {
+                keyboard?.hide()
+                focusManager.clearFocus()
+            } else {
+                onClose()
+            }
+        },
         sheetState = sheetState,
         containerColor = Color(0xFF0B0B10),
         scrimColor = Color.Black.copy(alpha = 0.78f),
+        properties = ModalBottomSheetProperties(
+            shouldDismissOnBackPress = false
+        ),
         dragHandle = {
             Box(
                 Modifier
@@ -154,7 +187,8 @@ fun BotSheet(
 
                 // AI Engine card
                 Surface(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth(),
                     shape = RoundedCornerShape(18.dp),
                     color = Color.White.copy(alpha = 0.06f),
                     border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f))
@@ -228,6 +262,8 @@ fun BotSheet(
                                 )
                             }
                         } else {
+                            val baseIndex = (messages.size - shown.size).coerceAtLeast(0)
+
                             LazyColumn(
                                 state = listState,
                                 modifier = Modifier
@@ -236,7 +272,10 @@ fun BotSheet(
                                     .padding(12.dp),
                                 verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                items(shown.size) { i ->
+                                items(
+                                    count = shown.size,
+                                    key = { i -> baseIndex + i }
+                                ) { i ->
                                     val m = shown[i]
                                     ChatBubble(
                                         msg = m,
@@ -253,9 +292,11 @@ fun BotSheet(
 
                 Spacer(Modifier.height(10.dp))
 
-                // Input area
+                // ✅ Input area: whole block (textbox + buttons) moves above keyboard
                 Surface(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .imePadding(),
                     shape = RoundedCornerShape(18.dp),
                     color = Color.White.copy(alpha = 0.06f),
                     border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f))
@@ -313,12 +354,34 @@ fun BotSheet(
 
                         Spacer(Modifier.height(8.dp))
 
-                        Text(
-                            "PDFLite AI can make mistakes, Check important info.",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color.White.copy(alpha = 0.45f),
-                            modifier = Modifier.padding(horizontal = 2.dp)
-                        )
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                "PDFLite AI can make mistakes. Check important info.",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontSize = 11.sp,
+                                    lineHeight = 14.sp
+                                ),
+                                color = Color.White.copy(alpha = 0.45f),
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+
+                            Spacer(Modifier.height(4.dp))
+
+                            Text(
+                                "When you use AI features, the text you select/extract may be sent to our server and AI providers to generate answers.",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontSize = 10.sp,
+                                    lineHeight = 13.sp
+                                ),
+                                color = Color.White.copy(alpha = 0.38f),
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
                     }
                 }
 
@@ -350,7 +413,7 @@ private fun ProviderPicker(
 
     val providers = remember {
         listOf(
-            ProviderId.GROQ to "Groq",
+            ProviderId.GROQ to "NOVA Micro",
             ProviderId.NOVA to "NOVA",
             ProviderId.OPENROUTER to "OpenRouter",
             ProviderId.LOCAL_OPENAI_COMPAT to "Local"

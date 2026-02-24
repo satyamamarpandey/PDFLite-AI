@@ -9,8 +9,8 @@
         android:icon="@mipmap/pdfliteaiicon"
         android:roundIcon="@mipmap/pdfliteaiicon_round"
         android:supportsRtl="true"
-        android:usesCleartextTraffic="true"
-        android:theme="@style/Theme.PDFLiteAI">
+        android:theme="@style/Theme.PDFLiteAI"
+        android:usesCleartextTraffic="false">
 
         <provider
             android:name="androidx.core.content.FileProvider"
@@ -24,34 +24,30 @@
 
         <activity
             android:name=".MainActivity"
+            android:windowSoftInputMode="adjustResize"
             android:exported="true">
 
-            <!-- Launcher -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- Open from other apps -->
+            <!-- PDF -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-
-                <!-- PDFs -->
                 <data android:mimeType="application/pdf" />
-
-                <!-- Word -->
-                <data android:mimeType="application/msword" />
-                <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
-
-                <!-- Text -->
-                <data android:mimeType="text/plain" />
-                <data android:mimeType="text/*" />
-
-                <!-- (Optional) RTF -->
-                <data android:mimeType="application/rtf" />
             </intent-filter>
+
+            <!-- TXT / text -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:mimeType="text/*" />
+            </intent-filter>
+
         </activity>
 
     </application>

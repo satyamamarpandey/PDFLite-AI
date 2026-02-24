@@ -316,7 +316,7 @@ private fun ProviderGridBig(
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                ProviderTile("Groq", selected == ProviderId.GROQ) { onSelect(ProviderId.GROQ) }
+                ProviderTile("NOVA Micro", selected == ProviderId.GROQ) { onSelect(ProviderId.GROQ) }
                 ProviderTile("OpenRouter", selected == ProviderId.OPENROUTER) { onSelect(ProviderId.OPENROUTER) }
             }
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -326,7 +326,7 @@ private fun ProviderGridBig(
         }
     } else {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-            ProviderTile("Groq", selected == ProviderId.GROQ) { onSelect(ProviderId.GROQ) }
+            ProviderTile("NOVA Micro", selected == ProviderId.GROQ) { onSelect(ProviderId.GROQ) }
             ProviderTile("OpenRouter", selected == ProviderId.OPENROUTER) { onSelect(ProviderId.OPENROUTER) }
             ProviderTile("NOVA", selected == ProviderId.NOVA) { onSelect(ProviderId.NOVA) }
             ProviderTile("Local", selected == ProviderId.LOCAL_OPENAI_COMPAT) { onSelect(ProviderId.LOCAL_OPENAI_COMPAT) }
