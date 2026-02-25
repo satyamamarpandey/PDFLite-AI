@@ -20,11 +20,13 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Divider
@@ -86,8 +88,13 @@ fun ToolsSheetV2(
     isReadingAloud: Boolean,
     onReadAloudStart: () -> Unit,
     onReadAloudStop: () -> Unit,
+    onReadAloudRestart: () -> Unit,
 
     onDeletePageNumber: (Int) -> Unit,
+
+    // ✅ NEW: Merge PDFs
+    onMergePdfs: () -> Unit,
+
     onCompress: suspend () -> File,
     onApplyWatermark: suspend (String) -> File,
 
@@ -344,6 +351,21 @@ fun ToolsSheetV2(
                                 ),
                                 shape = RoundedCornerShape(14.dp)
                             ) { Text("Stop") }
+
+                            // ✅ Reload button (restart from beginning)
+                            Button(
+                                onClick = onReadAloudRestart,
+                                enabled = hasDoc && docText.isNotBlank() && !busy,
+                                modifier = Modifier.width(56.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color.White.copy(alpha = 0.12f),
+                                    contentColor = Color.White
+                                ),
+                                shape = RoundedCornerShape(14.dp),
+                                contentPadding = PaddingValues(0.dp)
+                            ) {
+                                Icon(Icons.Outlined.Refresh, contentDescription = "Reload")
+                            }
                         }
 
                         Divider(color = Color.White.copy(alpha = 0.10f))
@@ -392,6 +414,21 @@ fun ToolsSheetV2(
                             ),
                             shape = RoundedCornerShape(14.dp)
                         ) { Text("Delete Page") }
+
+                        Divider(color = Color.White.copy(alpha = 0.10f))
+
+                        // ✅ NEW: Merge PDFs (added after delete page)
+                        SectionTitle("Merge PDFs")
+                        Button(
+                            onClick = onMergePdfs,
+                            enabled = !busy,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color.White.copy(alpha = 0.12f),
+                                contentColor = Color.White
+                            ),
+                            shape = RoundedCornerShape(14.dp)
+                        ) { Text("Merge PDFs") }
 
                         Divider(color = Color.White.copy(alpha = 0.10f))
 
@@ -449,7 +486,7 @@ fun ToolsSheetV2(
                                     contentColor = Color.White
                                 ),
                                 shape = RoundedCornerShape(14.dp)
-                            ) { Text("Compress & Share") }
+                            ) { Text("Shrink & Share") }
 
                             Button(
                                 onClick = {
@@ -473,7 +510,7 @@ fun ToolsSheetV2(
                                     contentColor = Color.White
                                 ),
                                 shape = RoundedCornerShape(14.dp)
-                            ) { Text("Compress & Save") }
+                            ) { Text("Shrink & Save") }
                         }
 
                         Divider(color = Color.White.copy(alpha = 0.10f))
@@ -556,7 +593,7 @@ fun ToolsSheetV2(
                         // Other
                         SectionTitle("Other")
                         ToolPill(
-                            text = "Rotate Current",
+                            text = "Rotate Current Document",
                             enabled = hasDoc && !busy,
                             onClick = onRotateCurrent,
                             modifier = Modifier.fillMaxWidth()

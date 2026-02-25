@@ -1,10 +1,14 @@
 package com.pdfliteai.ui.theme
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -13,6 +17,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -36,6 +41,9 @@ fun SettingsScreen(
     val vm: SettingsViewModel = viewModel()
     val s by vm.aiSettings.collectAsState()
     val r by vm.readerSettings.collectAsState()
+
+    val context = LocalContext.current
+    val LEGAL_URL = "https://pandeysatyam.com/pdfliteai-legal/index.html"
 
     val isLocal = s.provider == ProviderId.LOCAL_OPENAI_COMPAT
 
@@ -82,11 +90,15 @@ fun SettingsScreen(
             // ✅ bgDim now visibly works here too
             Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = r.bgDim)))
 
+            val scrollState = rememberScrollState()
+
             Column(
                 modifier = Modifier
                     .padding(pad)
                     .padding(16.dp)
-                    .fillMaxSize(),
+                    .fillMaxSize()
+                    .verticalScroll(scrollState)      // ✅ allows bottom content to show
+                    .navigationBarsPadding(),          // ✅ prevents bottom clipping
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 // ---------------- AI Provider ----------------
@@ -270,7 +282,14 @@ fun SettingsScreen(
                         value = r.recentsLimit.toFloat(),
                         onValueChange = { vm.setRecentsLimit(it.toInt()) },
                         valueRange = 3f..10f,
-                        steps = 6
+                        steps = 6,
+                        colors = SliderDefaults.colors(
+                            thumbColor = Color.White.copy(alpha = 0.95f),
+                            activeTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.95f),
+                            inactiveTrackColor = Color.White.copy(alpha = 0.20f),
+                            activeTickColor = Color.White.copy(alpha = 0.90f),
+                            inactiveTickColor = Color.White.copy(alpha = 0.35f)
+                        )
                     )
 
                     Spacer(Modifier.height(10.dp))
@@ -283,7 +302,47 @@ fun SettingsScreen(
                         ),
                         border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f))
                     ) { Text("Clear recents") }
+
+                    // ----------- Legal / Support link (centered at bottom) -----------
+                    Spacer(Modifier.height(16.dp))
+                    HorizontalDivider(color = Color.White.copy(alpha = 0.14f))
+                    Spacer(Modifier.height(14.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Button(
+                            onClick = {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(LEGAL_URL))
+                                context.startActivity(intent)
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth(0.66f)
+                                .height(58.dp), // ✅ taller + obvious
+                            shape = RoundedCornerShape(24.dp),
+                            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 18.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
+                                contentColor = Color.White
+                            ),
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.26f)),
+                            elevation = ButtonDefaults.buttonElevation(
+                                defaultElevation = 14.dp,
+                                pressedElevation = 4.dp
+                            )
+                        ) {
+                            Text(
+                                "Legal & Support",
+                                color = Color.White,
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                        }
+                    }
                 }
+
+                // ✅ extra breathing room at the very bottom
+                Spacer(Modifier.height(24.dp))
             }
         }
     }

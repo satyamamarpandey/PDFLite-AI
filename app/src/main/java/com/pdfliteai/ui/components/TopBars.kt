@@ -14,6 +14,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -37,7 +38,8 @@ fun PdfTopBar(
     hasDoc: Boolean,
     onOpen: () -> Unit,
     onTools: () -> Unit,
-    onSettings: () -> Unit
+    onSettings: () -> Unit,
+    onSaveCopy: (() -> Unit)? = null
 ) {
     val primary = MaterialTheme.colorScheme.primary
     val barColor = Color.Black.copy(alpha = 0.28f)
@@ -73,6 +75,18 @@ fun PdfTopBar(
                 if (hasDoc) {
                     GlowPrimaryButton(text = "Open", onClick = onOpen)
                     Spacer(Modifier.width(10.dp))
+
+                    // ✅ Save button (Save a copy)
+                    if (onSaveCopy != null) {
+                        IconButton(onClick = onSaveCopy) {
+                            Icon(
+                                imageVector = Icons.Outlined.Save,
+                                contentDescription = "Save a copy",
+                                tint = Color.White
+                            )
+                        }
+                        Spacer(Modifier.width(2.dp))
+                    }
                 }
 
                 IconButton(onClick = onTools, enabled = hasDoc) {

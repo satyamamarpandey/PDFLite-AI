@@ -10,7 +10,9 @@ import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.util.Log
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -93,6 +95,8 @@ import com.pdfliteai.ui.components.GlowPrimaryButton
 import com.pdfliteai.ui.components.PdfSearchResult
 import com.pdfliteai.ui.components.PdfTopBar
 import com.pdfliteai.ui.components.ToolsSheetV2
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -103,6 +107,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.URLDecoder
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.math.sqrt
@@ -122,9 +127,36 @@ import com.tom_roush.pdfbox.pdmodel.graphics.state.PDExtendedGraphicsState
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import com.tom_roush.pdfbox.text.TextPosition
 import com.tom_roush.pdfbox.util.Matrix.getRotateInstance
+import com.tom_roush.pdfbox.io.MemoryUsageSetting
+import com.tom_roush.pdfbox.multipdf.PDFMergerUtility
+import androidx.compose.foundation.layout.Row
 
 private const val TTS_CHUNK_MAX = 3500
 private const val TAG_PDF_SCREEN = "PdfScreen"
+
+/** ✅ Used to await a single utterance completion so UI state stays correct. */
+private class TtsGate {
+    @Volatile var waitingId: String? = null
+    @Volatile var deferred: CompletableDeferred<Unit>? = null
+
+    fun completeIfMatches(id: String?) {
+        val d = deferred ?: return
+        if (id != null && id == waitingId && !d.isCompleted) d.complete(Unit)
+    }
+
+    fun failIfMatches(id: String?) {
+        val d = deferred ?: return
+        if (id != null && id == waitingId && !d.isCompleted) d.complete(Unit)
+    }
+
+    fun cancelWait() {
+        deferred?.let { d ->
+            if (!d.isCompleted) d.completeExceptionally(CancellationException("Stopped"))
+        }
+        deferred = null
+        waitingId = null
+    }
+}
 
 @Composable
 fun PdfScreen(
@@ -188,8 +220,41 @@ fun PdfScreen(
     var ttsSpeaking by remember { mutableStateOf(false) }
     var ttsJob: Job? by remember { mutableStateOf(null) }
 
-    // ✅ prevents overlapping opens (and UI thread freezes)
+    // ✅ legacy chunk index (kept)
+    var ttsChunkIndex by remember { mutableIntStateOf(0) }
+    // ✅ resume cursor
+    val ttsResumeChar = remember { AtomicInteger(0) }
+    // ✅ awaiter gate
+    val ttsGate = remember { TtsGate() }
+
+    // ✅ prevents overlapping opens
     var openJob: Job? by remember { mutableStateOf(null) }
+
+    // ✅ NEW: TopBar "Save a copy" launcher
+    var pendingTopbarSaveFile by remember { mutableStateOf<File?>(null) }
+    val topbarSaveLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/pdf")
+    ) { outUri: Uri? ->
+        val f = pendingTopbarSaveFile
+        pendingTopbarSaveFile = null
+        if (outUri == null || f == null) return@rememberLauncherForActivityResult
+
+        cs.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    ctx.contentResolver.openOutputStream(outUri)?.use { out ->
+                        f.inputStream().use { it.copyTo(out) }
+                    } ?: error("Unable to write file.")
+                }
+            }.onSuccess {
+                Toast.makeText(ctx, "Saved", Toast.LENGTH_SHORT).show()
+            }.onFailure {
+                val msg = it.message ?: "Save failed"
+                error = msg
+                Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
 
     DisposableEffect(Unit) {
         lateinit var engine: TextToSpeech
@@ -198,15 +263,56 @@ fun PdfScreen(
             if (ttsReady) {
                 engine.language = Locale.US
                 engine.setSpeechRate(1.0f)
+
+                engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+
+                    private fun parseId(id: String?): Pair<Int, Int>? {
+                        val s = id ?: return null
+                        val parts = s.split('_')
+                        if (parts.size < 5) return null
+                        val base = parts[2].toIntOrNull() ?: return null
+                        val len = parts[3].toIntOrNull() ?: return null
+                        return base to len
+                    }
+
+                    override fun onStart(utteranceId: String?) {}
+
+                    override fun onRangeStart(utteranceId: String?, start: Int, end: Int, frame: Int) {
+                        val (base, _) = parseId(utteranceId) ?: return
+                        val abs = base + start.coerceAtLeast(0)
+                        ttsResumeChar.set(abs)
+                        ttsChunkIndex = (abs / TTS_CHUNK_MAX).coerceAtLeast(0)
+                    }
+
+                    override fun onDone(utteranceId: String?) {
+                        parseId(utteranceId)?.let { (base, len) ->
+                            val abs = base + len
+                            ttsResumeChar.set(abs)
+                            ttsChunkIndex = (abs / TTS_CHUNK_MAX).coerceAtLeast(0)
+                        }
+                        ttsGate.completeIfMatches(utteranceId)
+                    }
+
+                    @Deprecated("Deprecated in Java")
+                    override fun onError(utteranceId: String?) {
+                        ttsGate.failIfMatches(utteranceId)
+                    }
+
+                    override fun onError(utteranceId: String?, errorCode: Int) {
+                        ttsGate.failIfMatches(utteranceId)
+                    }
+                })
             }
         }
         tts = engine
         onDispose {
             runCatching {
+                ttsGate.cancelWait()
                 ttsJob?.cancel()
                 engine.stop()
                 engine.shutdown()
             }
+            ttsJob = null
             tts = null
         }
     }
@@ -229,7 +335,6 @@ fun PdfScreen(
         return if (n.isBlank()) u else "$u$recentSep$n"
     }
 
-    // ✅ keep as local functions (no 'private' inside composable)
     fun queryDisplayName(uri: Uri): String? {
         return runCatching {
             ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
@@ -241,10 +346,8 @@ fun PdfScreen(
     }
 
     fun resolveDisplayName(uri: Uri): String {
-        // 1) Standard query
         queryDisplayName(uri)?.let { return it }
 
-        // 2) Downloads provider fallback (fixes "document:34" on many devices)
         val isDoc = runCatching { DocumentsContract.isDocumentUri(ctx, uri) }.getOrDefault(false)
         if (isDoc && uri.authority == "com.android.providers.downloads.documents") {
             val docId = runCatching { DocumentsContract.getDocumentId(uri) }.getOrDefault("")
@@ -258,7 +361,6 @@ fun PdfScreen(
             }
         }
 
-        // 3) Last resort: decoded lastPathSegment
         val seg = (uri.lastPathSegment ?: uri.toString()).trim()
         val decoded = runCatching { URLDecoder.decode(seg, "UTF-8") }.getOrDefault(seg)
         return decoded.ifBlank { uri.toString() }
@@ -275,10 +377,6 @@ fun PdfScreen(
         return u.endsWith(".txt") || u.endsWith(".log") || u.endsWith(".md") || u.endsWith(".csv")
     }
 
-    /**
-     * ✅ Persist permission correctly:
-     * takePersistableUriPermission ONLY accepts READ and/or WRITE (NOT PERSISTABLE flag).
-     */
     fun tryTakePersistableRead(uri: Uri) {
         runCatching {
             ctx.contentResolver.takePersistableUriPermission(
@@ -286,33 +384,24 @@ fun PdfScreen(
                 Intent.FLAG_GRANT_READ_URI_PERMISSION
             )
         }.onFailure {
-            // This can fail for some URIs (e.g., ACTION_VIEW temp grants). Not fatal.
             Log.w(TAG_PDF_SCREEN, "Persistable permission not granted: ${it.message}")
         }
     }
 
-    /**
-     * ✅ PDF + TEXT only
-     * ✅ Open on background thread to avoid ANR/"keeps stopping"
-     * ✅ Don’t add to recents unless open succeeded
-     */
     fun openAny(uri: Uri, mimeHint: String? = null) {
         val uriStr = uri.toString()
         val mime = (mimeHint ?: ctx.contentResolver.getType(uri)).orEmpty().lowercase()
         val name = resolveDisplayName(uri)
         docDisplayName = name
 
-        // new doc session (UI state)
         docSessionId += 1
         searchHighlightActive = false
         cleanPdfFile = null
         error = null
 
-        // cancel any previous open work
         openJob?.cancel()
         openJob = cs.launch {
             val ok = runCatching {
-                // ensure PDFBox resources are initialized before any PDFBox usage
                 runCatching { PDFBoxResourceLoader.init(ctx) }
 
                 withContext(Dispatchers.IO) {
@@ -330,7 +419,6 @@ fun PdfScreen(
 
             if (!ok) return@launch
 
-            // only after successful open
             vm.addRecent(packRecent(uriStr, name))
             botOpen = reader.autoOpenAi
         }
@@ -353,6 +441,36 @@ fun PdfScreen(
         }
     }
 
+    // ✅ NEW: Merge PDFs picker (multi-select)
+    val mergePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris: List<Uri> ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+
+        // ✅ ensure we can read every selected URI
+        uris.forEach { tryTakePersistableRead(it) }
+
+        cs.launch {
+            runCatching {
+                val out = mergePdfUrisToCache(ctx, uris)
+                docDisplayName = out.name
+                searchHighlightActive = false
+                cleanPdfFile = null
+                ttsChunkIndex = 0
+                ttsResumeChar.set(0)
+
+                repo.replacePdfFile(out)
+
+                // ✅ force a fresh "document session" so renderer/list resets
+                docSessionId += 1
+
+                botOpen = reader.autoOpenAi
+            }.onFailure {
+                error = it.message ?: "Merge failed"
+            }
+        }
+    }
+
     // on file change (PDF only)
     LaunchedEffect(pdfFile) {
         val f = pdfFile ?: return@LaunchedEffect
@@ -367,8 +485,11 @@ fun PdfScreen(
         zoomScale = 1f
         pageCount = 0
 
-        // stop TTS if a new doc is opened
+        ttsChunkIndex = 0
+        ttsResumeChar.set(0)
+
         runCatching {
+            ttsGate.cancelWait()
             ttsJob?.cancel()
             tts?.stop()
             ttsSpeaking = false
@@ -438,51 +559,81 @@ fun PdfScreen(
         }
     }
 
-    // ✅ explicit TTS controls (no toggle desync)
     fun stopReadAloud() {
-        val engine = tts
-        if (engine == null) {
-            ttsSpeaking = false
-            return
-        }
-        runCatching {
-            ttsJob?.cancel()
-            engine.stop()
-        }
         ttsSpeaking = false
+        ttsGate.cancelWait()
+        ttsJob?.cancel()
+        ttsJob = null
+        runCatching { tts?.stop() }
     }
 
     fun startReadAloud() {
-        val text = cachedText.trim()
+        val full = stripTtsPageMarkers(cachedText).trim()
         val engine = tts
         if (engine == null || !ttsReady) {
             error = "Text-to-Speech not ready."
             return
         }
-        if (text.isBlank()) {
+        if (full.isBlank()) {
             error = "No extracted text to read."
             return
         }
-        if (ttsSpeaking) return
+        if (ttsJob?.isActive == true || ttsSpeaking) return
 
-        stopReadAloud()
+        val startAt = ttsResumeChar.get().coerceIn(0, full.length)
+        val remaining = full.substring(startAt)
+        val chunks = chunkText(remaining)
+        if (chunks.isEmpty()) {
+            error = "No extracted text to read."
+            return
+        }
+
+        ttsChunkIndex = (startAt / TTS_CHUNK_MAX).coerceAtLeast(0)
 
         ttsSpeaking = true
-        val chunks = chunkText(text)
 
         ttsJob = cs.launch(Dispatchers.Main) {
-            for ((i, c) in chunks.withIndex()) {
-                if (!isActive || !ttsSpeaking) break
-                engine.speak(
-                    c,
-                    if (i == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD,
-                    null,
-                    "utt_$i"
-                )
-                delay(120)
+            try {
+                var base = startAt
+                while (isActive && ttsSpeaking && chunks.isNotEmpty()) {
+                    for (chunk in chunks) {
+                        if (!isActive || !ttsSpeaking) break
+
+                        val uttId = "pdflite_tts_${base}_${chunk.length}_${System.nanoTime()}"
+
+                        val deferred = CompletableDeferred<Unit>()
+                        ttsGate.waitingId = uttId
+                        ttsGate.deferred = deferred
+
+                        engine.speak(chunk, TextToSpeech.QUEUE_FLUSH, null, uttId)
+
+                        deferred.await()
+
+                        if (!isActive || !ttsSpeaking) break
+
+                        base += chunk.length
+                        ttsResumeChar.set(base)
+                        ttsChunkIndex = (base / TTS_CHUNK_MAX).coerceAtLeast(0)
+                    }
+                    break
+                }
+            } catch (_: CancellationException) {
+            } finally {
+                ttsGate.cancelWait()
+                if (ttsResumeChar.get() >= full.length) {
+                    ttsResumeChar.set(0)
+                    ttsChunkIndex = 0
+                }
+                ttsSpeaking = false
             }
-            ttsSpeaking = false
         }
+    }
+
+    fun reloadReadAloud() {
+        ttsChunkIndex = 0
+        ttsResumeChar.set(0)
+        stopReadAloud()
+        startReadAloud()
     }
 
     fun clearSearchHighlights() {
@@ -753,14 +904,12 @@ fun PdfScreen(
         )
     )
 
-    // Scroll state + visible page (PDF only)
     val pdfListState = remember(docSessionId) { LazyListState() }
     val firstVisible by remember { derivedStateOf { pdfListState.firstVisibleItemIndex } }
     LaunchedEffect(firstVisible, pageCount) {
         if (pageCount > 0) pageIndex = firstVisible.coerceIn(0, pageCount - 1)
     }
 
-    // Page pill only while scrolling
     val isScrolling by remember { derivedStateOf { pdfListState.isScrollInProgress } }
     var showPagePill by remember { mutableStateOf(false) }
     LaunchedEffect(isScrolling) {
@@ -795,7 +944,20 @@ fun PdfScreen(
                         if (hasPdfDoc) toolsOpen = true
                         else error = "Tools are available for PDFs only."
                     },
-                    onSettings = onOpenSettings
+                    onSettings = onOpenSettings,
+
+                    // ✅ NEW: show Save icon after open, save current PDF as copy
+                    onSaveCopy = if (hasPdfDoc) {
+                        {
+                            val f = pdfFile
+                            if (f == null || !f.exists()) {
+                                error = "No PDF to save."
+                            } else {
+                                pendingTopbarSaveFile = f
+                                topbarSaveLauncher.launch(sanitizePdfName(docDisplayName))
+                            }
+                        }
+                    } else null
                 )
             },
             floatingActionButton = { BotFab(onClick = { botOpen = true }) },
@@ -885,10 +1047,23 @@ fun PdfScreen(
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.spacedBy(14.dp)
                             ) {
-                                GlowPrimaryButton(
-                                    text = "Open File",
-                                    onClick = { picker.launch(arrayOf("application/pdf", "text/*")) }
-                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.Center,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    GlowPrimaryButton(
+                                        text = "Open File",
+                                        onClick = { picker.launch(arrayOf("application/pdf", "text/*")) }
+                                    )
+
+                                    Spacer(Modifier.width(16.dp)) // spacing between buttons
+
+                                    GlowPrimaryButton(
+                                        text = "Merge PDFs",
+                                        onClick = { mergePicker.launch(arrayOf("application/pdf")) }
+                                    )
+                                }
 
                                 Surface(
                                     modifier = Modifier.fillMaxWidth(),
@@ -1011,8 +1186,13 @@ fun PdfScreen(
                 isReadingAloud = ttsSpeaking,
                 onReadAloudStart = { startReadAloud() },
                 onReadAloudStop = { stopReadAloud() },
+                onReadAloudRestart = { reloadReadAloud() },
 
                 onDeletePageNumber = { pageNum1Based -> deletePageAt(pageNum1Based - 1) },
+
+                // ✅ Merge PDFs
+                onMergePdfs = { mergePicker.launch(arrayOf("application/pdf")) },
+
                 onCompress = { compressPdf() },
                 onApplyWatermark = { wm -> applyWatermark(wm) },
 
@@ -1267,9 +1447,6 @@ private fun buildAskPromptWithinLimit(
     return head + doc + mid + q
 }
 
-/**
- * Fuzzy regex: matches across whitespace/hyphenation/soft-hyphen/NBSP/zero-width space and common dash chars.
- */
 private fun findAllOccurrenceRanges(haystack: String, needle: String): List<IntRange> {
     val q = needle.trim()
     if (q.isBlank()) return emptyList()
@@ -1449,5 +1626,59 @@ private fun addWatermarkToPage(doc: PDDocument, page: PDPage, text: String) {
 
         cs.showText(wmText)
         cs.endText()
+    }
+}
+
+private fun stripTtsPageMarkers(text: String): String {
+    val pageMarkerLine = Regex(
+        pattern = """(?im)^\s*[-=]{2,}\s*page\s*\d+\s*[-=]{2,}\s*$"""
+    )
+
+    val mostlyDashesEquals = Regex(
+        pattern = """(?im)^\s*[-=]{3,}\s*(?:page\s*\d+\s*)?[-=]{3,}\s*$"""
+    )
+
+    return text
+        .replace(pageMarkerLine, "")
+        .replace(mostlyDashesEquals, "")
+        .lines()
+        .joinToString("\n") { it.trimEnd() }
+        .replace(Regex("""\n{3,}"""), "\n\n")
+        .trim()
+}
+
+private fun mergePdfUrisToCache(ctx: android.content.Context, uris: List<Uri>): File {
+    PDFBoxResourceLoader.init(ctx)
+
+    if (uris.size < 2) throw IllegalStateException("Select at least 2 PDFs")
+
+    val outFile = File(ctx.cacheDir, "merged_${System.currentTimeMillis()}.pdf")
+    val merger = PDFMergerUtility()
+
+    // Some file providers return streams that PDFBox can't reliably reuse.
+    // Copy each selected PDF to a temp file and merge from files.
+    val tempSources = ArrayList<File>(uris.size)
+
+    try {
+        for (u in uris) {
+            val tmp = File(ctx.cacheDir, "merge_src_${System.nanoTime()}.pdf")
+            ctx.contentResolver.openInputStream(u)?.use { input ->
+                tmp.outputStream().use { output -> input.copyTo(output) }
+            } ?: throw IllegalStateException("Cannot open selected PDF")
+
+            tempSources.add(tmp)
+            merger.addSource(tmp)
+        }
+
+        merger.destinationFileName = outFile.absolutePath
+        merger.mergeDocuments(MemoryUsageSetting.setupTempFileOnly())
+
+        if (!outFile.exists() || outFile.length() <= 0L) {
+            throw IllegalStateException("Merged PDF could not be created.")
+        }
+
+        return outFile
+    } finally {
+        tempSources.forEach { runCatching { it.delete() } }
     }
 }

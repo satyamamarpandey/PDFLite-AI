@@ -42,9 +42,24 @@ class MainActivity : ComponentActivity() {
 
     private fun handleIncomingIntent(intent: Intent?) {
         if (intent == null) return
-        if (intent.action != Intent.ACTION_VIEW) return
 
-        val uri = intent.data ?: return
+        val action = intent.action
+
+        val uri = when (action) {
+            Intent.ACTION_VIEW -> intent.data
+
+            Intent.ACTION_SEND -> {
+                @Suppress("DEPRECATION")
+                intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri
+            }
+
+            Intent.ACTION_SEND_MULTIPLE -> {
+                @Suppress("DEPRECATION")
+                intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)?.firstOrNull()
+            }
+
+            else -> null
+        } ?: return
 
         pendingOpenUriState.value = uri
         pendingOpenMimeState.value = intent.type ?: contentResolver.getType(uri)
