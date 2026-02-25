@@ -27,6 +27,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Divider
@@ -51,8 +53,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.delay
@@ -92,23 +94,25 @@ fun ToolsSheetV2(
 
     onDeletePageNumber: (Int) -> Unit,
 
-    // ✅ NEW: Merge PDFs
+    // Merge PDFs
     onMergePdfs: () -> Unit,
 
     onCompress: suspend () -> File,
     onApplyWatermark: suspend (String) -> File,
 
-    // ✅ owner password only
+    // owner password only
     onSecurePdfOwnerOnly: suspend (String) -> File,
 
-    // ✅ go to page number (1-based)
+    // go to page number (1-based)
     onGoToPage1Based: (Int) -> Unit,
 
-    onRotateCurrent: () -> Unit
+    // ✅ NEW: rotate helpers
+    onRotatePage1Based: (Int) -> Unit,
+    onRotateEntireDocument: () -> Unit
 ) {
     if (!open) return
 
-    val ctx = LocalContext.current
+    val ctx = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
     val snack = remember { SnackbarHostState() }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -153,11 +157,15 @@ fun ToolsSheetV2(
     // Watermark
     var watermarkText by remember { mutableStateOf("") }
 
-    // Secure (single owner password)
+    // Secure (owner only)
     var ownerPass by remember { mutableStateOf("") }
+    var ownerPassVisible by remember { mutableStateOf(false) }
 
     // Go to page
     var goToPageInput by remember { mutableStateOf("") }
+
+    // ✅ Rotate options
+    var rotatePageInput by remember { mutableStateOf("") }
 
     fun sharePdfWithName(file: File, name: String) {
         runCatching {
@@ -263,7 +271,6 @@ fun ToolsSheetV2(
                                         busy = true
                                         searchStatus = null
 
-                                        // Remove previous highlights before applying new ones
                                         if (searchHasHighlights) onClearSearchHighlights()
 
                                         val outcome = runCatching { onSearchHighlight(q) }.getOrElse {
@@ -276,7 +283,6 @@ fun ToolsSheetV2(
 
                                         if (!outcome.found) {
                                             searchStatus = "Not found in the doc"
-                                            // auto-clear after 3s
                                             launch {
                                                 delay(3000)
                                                 searchStatus = null
@@ -352,7 +358,6 @@ fun ToolsSheetV2(
                                 shape = RoundedCornerShape(14.dp)
                             ) { Text("Stop") }
 
-                            // ✅ Reload button (restart from beginning)
                             Button(
                                 onClick = onReadAloudRestart,
                                 enabled = hasDoc && docText.isNotBlank() && !busy,
@@ -417,7 +422,7 @@ fun ToolsSheetV2(
 
                         Divider(color = Color.White.copy(alpha = 0.10f))
 
-                        // ✅ NEW: Merge PDFs (added after delete page)
+                        // 5) Merge PDFs
                         SectionTitle("Merge PDFs")
                         Button(
                             onClick = onMergePdfs,
@@ -432,7 +437,7 @@ fun ToolsSheetV2(
 
                         Divider(color = Color.White.copy(alpha = 0.10f))
 
-                        // 5) Save a Copy
+                        // 6) Save a Copy
                         SectionTitle("Save a Copy")
                         OutlinedTextField(
                             value = saveName,
@@ -459,7 +464,7 @@ fun ToolsSheetV2(
 
                         Divider(color = Color.White.copy(alpha = 0.10f))
 
-                        // 6) Compress
+                        // 7) Compress
                         SectionTitle("Compress PDF")
                         Row(
                             Modifier.fillMaxWidth(),
@@ -515,7 +520,7 @@ fun ToolsSheetV2(
 
                         Divider(color = Color.White.copy(alpha = 0.10f))
 
-                        // 7) Watermark
+                        // 8) Watermark
                         SectionTitle("Add Watermark")
                         OutlinedTextField(
                             value = watermarkText,
@@ -552,7 +557,7 @@ fun ToolsSheetV2(
 
                         Divider(color = Color.White.copy(alpha = 0.10f))
 
-                        // 8) Secure (owner only)
+                        // 9) Secure (owner only) + ✅ Eye toggle
                         SectionTitle("Secure PDF")
                         OutlinedTextField(
                             value = ownerPass,
@@ -560,8 +565,20 @@ fun ToolsSheetV2(
                             modifier = Modifier.fillMaxWidth(),
                             enabled = hasDoc && !busy,
                             singleLine = true,
-                            visualTransformation = PasswordVisualTransformation(),
-                            placeholder = { Text("Owner password (edit/remove security)", color = Color.White.copy(alpha = 0.45f)) }
+                            visualTransformation = if (ownerPassVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                            placeholder = { Text("Enter password", color = Color.White.copy(alpha = 0.45f)) },
+                            trailingIcon = {
+                                IconButton(
+                                    onClick = { ownerPassVisible = !ownerPassVisible },
+                                    enabled = hasDoc && !busy
+                                ) {
+                                    Icon(
+                                        imageVector = if (ownerPassVisible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
+                                        contentDescription = if (ownerPassVisible) "Hide password" else "Show password",
+                                        tint = Color.White.copy(alpha = 0.85f)
+                                    )
+                                }
+                            }
                         )
                         Button(
                             onClick = {
@@ -592,13 +609,63 @@ fun ToolsSheetV2(
 
                         // Other
                         SectionTitle("Other")
-                        ToolPill(
-                            text = "Rotate Current Document",
+
+                        // ✅ Rotate specific page + rotate entire document
+                        OutlinedTextField(
+                            value = rotatePageInput,
+                            onValueChange = { rotatePageInput = it.filter(Char::isDigit).take(5) },
+                            modifier = Modifier.fillMaxWidth(),
                             enabled = hasDoc && !busy,
-                            onClick = onRotateCurrent,
-                            modifier = Modifier.fillMaxWidth()
+                            singleLine = true,
+                            placeholder = { Text("Rotate page # (e.g., 1)", color = Color.White.copy(alpha = 0.45f)) }
                         )
 
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    if (!hasDoc) return@Button
+                                    val n = rotatePageInput.toIntOrNull()
+                                    if (n == null || n <= 0) {
+                                        scope.launch { snack.showSnackbar("Enter a valid page number") }
+                                        return@Button
+                                    }
+                                    // if pageCount is known, validate; otherwise allow and let scroll/render catch up
+                                    if (pageCount > 0 && n > pageCount) {
+                                        scope.launch { snack.showSnackbar("Page must be between 1 and $pageCount") }
+                                        return@Button
+                                    }
+                                    onRotatePage1Based(n)
+                                    scope.launch { snack.showSnackbar("Rotated page $n") }
+                                },
+                                enabled = hasDoc && !busy,
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color.White.copy(alpha = 0.12f),
+                                    contentColor = Color.White
+                                ),
+                                shape = RoundedCornerShape(14.dp)
+                            ) { Text("Rotate Page") }
+
+                            Button(
+                                onClick = {
+                                    if (!hasDoc) return@Button
+                                    onRotateEntireDocument()
+                                    scope.launch { snack.showSnackbar("Rotated entire document") }
+                                },
+                                enabled = hasDoc && !busy,
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color.White.copy(alpha = 0.12f),
+                                    contentColor = Color.White
+                                ),
+                                shape = RoundedCornerShape(14.dp)
+                            ) { Text("Rotate All") }
+                        }
+
+                        // ✅ Go to Page (fixed)
                         OutlinedTextField(
                             value = goToPageInput,
                             onValueChange = { goToPageInput = it.filter(Char::isDigit).take(5) },
@@ -612,6 +679,10 @@ fun ToolsSheetV2(
                                 val n = goToPageInput.toIntOrNull()
                                 if (n == null || n <= 0) {
                                     scope.launch { snack.showSnackbar("Enter a valid page number") }
+                                    return@Button
+                                }
+                                if (pageCount > 0 && n > pageCount) {
+                                    scope.launch { snack.showSnackbar("Page must be between 1 and $pageCount") }
                                     return@Button
                                 }
                                 onGoToPage1Based(n)
@@ -653,31 +724,6 @@ private fun SectionTitle(t: String) {
         style = MaterialTheme.typography.titleSmall,
         color = Color.White.copy(alpha = 0.92f)
     )
-}
-
-@Composable
-private fun ToolPill(
-    text: String,
-    enabled: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(14.dp),
-        color = Color.White.copy(alpha = if (enabled) 0.06f else 0.03f),
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f))
-    ) {
-        TextButton(
-            onClick = onClick,
-            enabled = enabled,
-            modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.textButtonColors(
-                contentColor = Color.White,
-                disabledContentColor = Color.White.copy(alpha = 0.35f)
-            )
-        ) { Text(text) }
-    }
 }
 
 private fun sanitizePdfName(name: String): String {

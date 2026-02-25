@@ -6,10 +6,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ime
@@ -17,6 +19,10 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
@@ -32,19 +38,17 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalBottomSheetProperties
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -61,12 +65,12 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.pdfliteai.data.ProviderId
 import kotlinx.coroutines.launch
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.sp
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -98,7 +102,6 @@ fun BotSheet(
     val scope = rememberCoroutineScope()
     val snack = remember { SnackbarHostState() }
     val clipboard = LocalClipboardManager.current
-
     val listState = rememberLazyListState()
 
     val shown = remember(messages, historyChatsLimit) {
@@ -112,7 +115,7 @@ fun BotSheet(
         }
     }
 
-    // ✅ IME (keyboard) handling: hide keyboard first (don’t close sheet)
+    // IME handling (for back dismiss behavior + compact hint)
     val keyboard = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
     val density = LocalDensity.current
@@ -123,9 +126,12 @@ fun BotSheet(
         focusManager.clearFocus()
     }
 
+    // Measure pinned input height so chat never hides behind it
+    var inputHeightPx by remember { mutableIntStateOf(0) }
+    val inputHeightDp = with(density) { inputHeightPx.toDp() }
+
     ModalBottomSheet(
         onDismissRequest = {
-            // ✅ If keyboard is open, close keyboard only; keep sheet open
             if (imeVisible) {
                 keyboard?.hide()
                 focusManager.clearFocus()
@@ -159,12 +165,11 @@ fun BotSheet(
             Modifier
                 .fillMaxHeight(0.94f)
                 .fillMaxWidth()
-                .navigationBarsPadding()
-                .imePadding()
         ) {
+            // Main content (does NOT move up on IME)
             Column(
                 Modifier
-                    .fillMaxWidth()
+                    .fillMaxSize()
                     .padding(horizontal = 14.dp)
             ) {
                 // Header
@@ -185,10 +190,9 @@ fun BotSheet(
                     }
                 }
 
-                // AI Engine card
+                // AI Engine card (NORMAL card, no align() here)
                 Surface(
-                    modifier = Modifier
-                        .fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(18.dp),
                     color = Color.White.copy(alpha = 0.06f),
                     border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f))
@@ -225,7 +229,7 @@ fun BotSheet(
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1.25f),
+                        .weight(1f),
                     shape = RoundedCornerShape(18.dp),
                     color = Color.White.copy(alpha = 0.05f),
                     border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f))
@@ -252,7 +256,8 @@ fun BotSheet(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .weight(1f)
-                                    .padding(14.dp),
+                                    .padding(14.dp)
+                                    .padding(bottom = inputHeightDp + 16.dp),
                                 contentAlignment = Alignment.TopStart
                             ) {
                                 Text(
@@ -270,7 +275,8 @@ fun BotSheet(
                                     .fillMaxWidth()
                                     .weight(1f)
                                     .padding(12.dp),
-                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                                contentPadding = PaddingValues(bottom = inputHeightDp + 16.dp)
                             ) {
                                 items(
                                     count = shown.size,
@@ -291,67 +297,84 @@ fun BotSheet(
                 }
 
                 Spacer(Modifier.height(10.dp))
+            }
 
-                // ✅ Input area: whole block (textbox + buttons) moves above keyboard
-                Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .imePadding(),
-                    shape = RoundedCornerShape(18.dp),
-                    color = Color.White.copy(alpha = 0.06f),
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f))
-                ) {
-                    Column(Modifier.padding(12.dp)) {
+            // ✅ PINNED input bar (above keyboard)
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter) // ✅ valid here (BoxScope)
+                    .padding(horizontal = 14.dp, vertical = 10.dp)
+                    .navigationBarsPadding()
+                    .imePadding()
+                    .onGloballyPositioned { inputHeightPx = it.size.height },
+                shape = RoundedCornerShape(18.dp),
+                color = Color(0xFF12121A), // ✅ darker solid background
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f))
+            ) {
+                Column(Modifier.padding(12.dp)) {
 
-                        OutlinedTextField(
-                            value = question,
-                            onValueChange = onQuestionChange,
-                            modifier = Modifier.fillMaxWidth(),
-                            enabled = !busy,
-                            minLines = 2,
-                            maxLines = 5,
-                            placeholder = {
-                                Text("Enter your message here.", color = Color.White.copy(alpha = 0.45f))
-                            }
+                    OutlinedTextField(
+                        value = question,
+                        onValueChange = onQuestionChange,
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !busy,
+                        minLines = 2,
+                        maxLines = 5,
+                        placeholder = {
+                            Text("Enter your message here.", color = Color.White.copy(alpha = 0.60f))
+                        },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = Color(0xFF0B0B10),
+                            unfocusedContainerColor = Color(0xFF0B0B10),
+                            disabledContainerColor = Color(0xFF0B0B10),
+
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            disabledTextColor = Color.White.copy(alpha = 0.6f),
+
+                            focusedBorderColor = Color.White.copy(alpha = 0.18f),
+                            unfocusedBorderColor = Color.White.copy(alpha = 0.12f),
+                            disabledBorderColor = Color.White.copy(alpha = 0.08f),
+
+                            cursorColor = MaterialTheme.colorScheme.primary
                         )
+                    )
 
-                        Spacer(Modifier.height(10.dp))
+                    Spacer(Modifier.height(10.dp))
 
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            Button(
-                                onClick = onAsk,
-                                enabled = !busy,
-                                modifier = Modifier.weight(1f),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.primary,
-                                    contentColor = Color.White,
-                                    disabledContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
-                                    disabledContentColor = Color.White.copy(alpha = 0.55f)
-                                ),
-                                shape = RoundedCornerShape(14.dp)
-                            ) {
-                                Text("Send")
-                            }
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Button(
+                            onClick = onAsk,
+                            enabled = !busy,
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.primary,
+                                contentColor = Color.White,
+                                disabledContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
+                                disabledContentColor = Color.White.copy(alpha = 0.55f)
+                            ),
+                            shape = RoundedCornerShape(14.dp)
+                        ) { Text("Send") }
 
-                            Button(
-                                onClick = onClearInput,
-                                enabled = !busy,
-                                modifier = Modifier.weight(1f),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = Color.White.copy(alpha = 0.10f),
-                                    contentColor = Color.White,
-                                    disabledContainerColor = Color.White.copy(alpha = 0.06f),
-                                    disabledContentColor = Color.White.copy(alpha = 0.55f)
-                                ),
-                                shape = RoundedCornerShape(14.dp)
-                            ) {
-                                Text("Cancel")
-                            }
-                        }
+                        Button(
+                            onClick = onClearInput,
+                            enabled = !busy,
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color.White.copy(alpha = 0.10f),
+                                contentColor = Color.White,
+                                disabledContainerColor = Color.White.copy(alpha = 0.06f),
+                                disabledContentColor = Color.White.copy(alpha = 0.55f)
+                            ),
+                            shape = RoundedCornerShape(14.dp)
+                        ) { Text("Clear") }
+                    }
 
+                    // Keep compact while typing
+                    if (!imeVisible) {
                         Spacer(Modifier.height(8.dp))
 
                         Column(
@@ -384,8 +407,6 @@ fun BotSheet(
                         }
                     }
                 }
-
-                Spacer(Modifier.height(10.dp))
             }
 
             SnackbarHost(
@@ -399,7 +420,7 @@ fun BotSheet(
 }
 
 /**
- * ✅ Provider dropdown - full width (matches anchor width)
+ * Provider dropdown - full width (matches anchor width)
  */
 @Composable
 private fun ProviderPicker(
@@ -451,10 +472,7 @@ private fun ProviderPicker(
                     )
                 }
                 Spacer(Modifier.weight(1f))
-                TextButton(
-                    onClick = { expanded = true },
-                    enabled = enabled
-                ) {
+                TextButton(onClick = { expanded = true }, enabled = enabled) {
                     Text("Change", color = Color.White.copy(alpha = if (enabled) 0.9f else 0.4f))
                 }
             }
@@ -491,7 +509,7 @@ private fun ProviderPicker(
 }
 
 /**
- * ✅ Quick prompts dropdown - full width (matches anchor width)
+ * Quick prompts dropdown - full width (matches anchor width)
  */
 @Composable
 private fun QuickPromptsDropdown(
@@ -533,10 +551,7 @@ private fun QuickPromptsDropdown(
                     )
                 }
                 Spacer(Modifier.weight(1f))
-                TextButton(
-                    onClick = { expanded = true },
-                    enabled = enabled
-                ) {
+                TextButton(onClick = { expanded = true }, enabled = enabled) {
                     Text("Choose", color = Color.White.copy(alpha = if (enabled) 0.9f else 0.4f))
                 }
             }

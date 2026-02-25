@@ -130,6 +130,10 @@ import com.tom_roush.pdfbox.util.Matrix.getRotateInstance
 import com.tom_roush.pdfbox.io.MemoryUsageSetting
 import com.tom_roush.pdfbox.multipdf.PDFMergerUtility
 import androidx.compose.foundation.layout.Row
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 
 private const val TTS_CHUNK_MAX = 3500
 private const val TAG_PDF_SCREEN = "PdfScreen"
@@ -227,8 +231,12 @@ fun PdfScreen(
     // ✅ awaiter gate
     val ttsGate = remember { TtsGate() }
 
+    // ✅ Queue jump until pages are loaded
+    var pendingGoToIdx0 by remember { mutableStateOf<Int?>(null) }
+
     // ✅ prevents overlapping opens
     var openJob: Job? by remember { mutableStateOf(null) }
+    var goToNonce by remember { mutableIntStateOf(0) } // forces re-run even for same page
 
     // ✅ NEW: TopBar "Save a copy" launcher
     var pendingTopbarSaveFile by remember { mutableStateOf<File?>(null) }
@@ -541,6 +549,58 @@ fun PdfScreen(
                     error = it.message ?: it::class.java.simpleName
                     return@launch
                 }
+            repo.replacePdfFile(out)
+        }
+    }
+
+    fun rotateSpecificPage1Based(page1: Int) {
+        val f = pdfFile ?: return
+        val idx0 = page1 - 1
+        cs.launch {
+            val out = runCatching {
+                withContext(Dispatchers.IO) {
+                    runCatching { PDFBoxResourceLoader.init(ctx) }
+                    val outFile = File(ctx.cacheDir, "rotated_p${page1}_${System.currentTimeMillis()}.pdf")
+                    PDDocument.load(f).use { doc ->
+                        if (idx0 !in 0 until doc.numberOfPages) {
+                            throw IllegalStateException("Invalid page number")
+                        }
+                        val p = doc.getPage(idx0)
+                        p.rotation = ((p.rotation + 90) % 360)
+                        doc.save(outFile)
+                    }
+                    outFile
+                }
+            }.getOrElse {
+                error = it.message ?: "Rotate failed"
+                return@launch
+            }
+
+            repo.replacePdfFile(out)
+        }
+    }
+
+    fun rotateEntireDocument() {
+        val f = pdfFile ?: return
+        cs.launch {
+            val out = runCatching {
+                withContext(Dispatchers.IO) {
+                    runCatching { PDFBoxResourceLoader.init(ctx) }
+                    val outFile = File(ctx.cacheDir, "rotated_all_${System.currentTimeMillis()}.pdf")
+                    PDDocument.load(f).use { doc ->
+                        for (i in 0 until doc.numberOfPages) {
+                            val p = doc.getPage(i)
+                            p.rotation = ((p.rotation + 90) % 360)
+                        }
+                        doc.save(outFile)
+                    }
+                    outFile
+                }
+            }.getOrElse {
+                error = it.message ?: "Rotate failed"
+                return@launch
+            }
+
             repo.replacePdfFile(out)
         }
     }
@@ -910,6 +970,49 @@ fun PdfScreen(
         if (pageCount > 0) pageIndex = firstVisible.coerceIn(0, pageCount - 1)
     }
 
+    suspend fun goToPageExact(listState: LazyListState, targetIdx0: Int) {
+        if (targetIdx0 < 0) return
+
+        // Wait until LazyColumn actually has enough items (avoids clamping to page 2)
+        withTimeoutOrNull(2000) {
+            snapshotFlow { listState.layoutInfo.totalItemsCount }
+                .filter { it > targetIdx0 } // means item at target exists
+                .first()
+        }
+
+        // Jump (scrollToItem is more deterministic than animateScrollToItem)
+        repeat(10) {
+            runCatching { listState.scrollToItem(targetIdx0) }
+            delay(60)
+
+            // If we landed, stop
+            if (listState.firstVisibleItemIndex == targetIdx0) return
+        }
+    }
+
+    LaunchedEffect(pageCount, pendingGoToIdx0, goToNonce) {
+        val idx = pendingGoToIdx0 ?: return@LaunchedEffect
+        if (pageCount <= 0) return@LaunchedEffect
+        if (idx !in 0 until pageCount) {
+            pendingGoToIdx0 = null
+            return@LaunchedEffect
+        }
+
+        // 1) initial jump
+        runCatching { pdfListState.animateScrollToItem(idx) }
+
+        // 2) wait for compose layout to settle, then correct once if needed
+        kotlinx.coroutines.delay(80)
+
+        val landed = pdfListState.firstVisibleItemIndex
+        if (landed != idx) {
+            runCatching { pdfListState.animateScrollToItem(idx) }
+            kotlinx.coroutines.delay(60)
+        }
+
+        pendingGoToIdx0 = null
+    }
+
     val isScrolling by remember { derivedStateOf { pdfListState.isScrollInProgress } }
     var showPagePill by remember { mutableStateOf(false) }
     LaunchedEffect(isScrolling) {
@@ -1199,13 +1302,19 @@ fun PdfScreen(
                 onSecurePdfOwnerOnly = { owner -> securePdf(owner) },
 
                 onGoToPage1Based = { page1 ->
-                    val max = (pageCount - 1).coerceAtLeast(0)
-                    if (pageCount <= 0) return@ToolsSheetV2
-                    val idx0 = (page1 - 1).coerceIn(0, max)
-                    cs.launch { runCatching { pdfListState.animateScrollToItem(idx0) } }
+                    val targetIdx0 = (page1 - 1).coerceAtLeast(0)
+
+                    cs.launch {
+                        val safeIdx0 =
+                            if (pageCount > 0) targetIdx0.coerceIn(0, pageCount - 1)
+                            else targetIdx0
+
+                        goToPageExact(pdfListState, safeIdx0)
+                    }
                 },
 
-                onRotateCurrent = { rotatePage() }
+                onRotatePage1Based = { page1 -> rotateSpecificPage1Based(page1) },
+                onRotateEntireDocument = { rotateEntireDocument() }
             )
         }
     }
