@@ -42,6 +42,14 @@ class PdfRepository(
     private val _lastError = MutableStateFlow<String?>(null)
     val lastError: StateFlow<String?> = _lastError
 
+    // ✅ NEW: stable-ish doc id for telemetry storage
+    private val _docId = MutableStateFlow("")
+    val docId: StateFlow<String> = _docId
+
+    // ✅ NEW: tells UI whether cachedText came from extracted / ocr / text
+    private val _textKind = MutableStateFlow("")
+    val textKind: StateFlow<String> = _textKind
+
     // ✅ extracted text cache
     private val memoryCache = LinkedHashMap<String, String>(8, 0.75f, true)
 
@@ -67,6 +75,9 @@ class PdfRepository(
                 val f = copyToCachePdf(uri)
                 _pdfFile.value = f
 
+                // ✅ NEW: compute docId from content sample (fast, stable-ish)
+                _docId.value = computeDocIdForPdf(f)
+
                 getOrExtractText(f)
             } catch (ce: CancellationException) {
                 throw ce
@@ -90,6 +101,10 @@ class PdfRepository(
 
                 if (text.isBlank()) _lastError.value = "Could not read text file."
                 _cachedText.value = text
+
+                // ✅ NEW
+                _textKind.value = "text"
+                _docId.value = computeDocIdForText(text)
             } catch (ce: CancellationException) {
                 throw ce
             } catch (t: Throwable) {
@@ -109,6 +124,10 @@ class PdfRepository(
                 _pdfFile.value = null
 
                 _pdfFile.value = file
+
+                // ✅ NEW
+                _docId.value = computeDocIdForPdf(file)
+
                 getOrExtractText(file)
             } catch (ce: CancellationException) {
                 throw ce
@@ -163,17 +182,22 @@ class PdfRepository(
             if (txt.isNotBlank()) {
                 memoryCachePut(key, txt)
                 _cachedText.value = txt
+                // ✅ best guess
+                _textKind.value = _textKind.value.ifBlank { "extracted" }
                 return txt
             }
         }
 
         _extracting.value = true
 
+        var kind = "extracted"
         val txt = try {
             val direct = runCatching { extractor.extractAllText(file) }.getOrDefault("").trim()
             if (direct.isNotBlank()) {
+                kind = "extracted"
                 direct
             } else {
+                kind = "ocr"
                 val ocrText = runCatching { ocrPdfFirstPages(file, maxPages = 6) }
                     .getOrElse { e ->
                         _lastError.value = "OCR failed: ${e.message ?: e::class.java.simpleName}"
@@ -193,6 +217,8 @@ class PdfRepository(
             _extracting.value = false
         }
 
+        _textKind.value = kind
+
         if (txt.isNotBlank()) {
             memoryCachePut(key, txt)
             runCatching { disk.writeText(txt) }
@@ -209,6 +235,10 @@ class PdfRepository(
         _cachedText.value = ""
         _cachedCondensedText.value = ""
         _extracting.value = false
+
+        // ✅ NEW
+        _docId.value = ""
+        _textKind.value = ""
     }
 
     private fun memoryCachePut(key: String, value: String) {
@@ -273,5 +303,37 @@ class PdfRepository(
         } finally {
             try { pfd?.close() } catch (_: Throwable) {}
         }
+    }
+
+    // -------------------------
+    // ✅ NEW docId helpers
+    // -------------------------
+    private fun computeDocIdForPdf(file: File): String {
+        // Fast + stable-ish: SHA256( length + first 1MB bytes )
+        val md = MessageDigest.getInstance("SHA-256")
+        md.update(file.length().toString().toByteArray())
+
+        val maxBytes = 1_000_000L
+        var readTotal = 0L
+        val buf = ByteArray(32 * 1024)
+
+        file.inputStream().use { input ->
+            while (readTotal < maxBytes) {
+                val n = input.read(buf)
+                if (n <= 0) break
+                val take = minOf(n.toLong(), (maxBytes - readTotal)).toInt()
+                md.update(buf, 0, take)
+                readTotal += take
+            }
+        }
+
+        return md.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    private fun computeDocIdForText(text: String): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        val t = text.take(500_000) // safety cap
+        md.update(t.toByteArray(Charsets.UTF_8))
+        return md.digest().joinToString("") { "%02x".format(it) }
     }
 }

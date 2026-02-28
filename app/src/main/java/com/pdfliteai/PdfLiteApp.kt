@@ -1,12 +1,44 @@
 package com.pdfliteai
 
 import android.app.Application
+import android.util.Log
+import androidx.work.*
+import com.pdfliteai.settings.SettingsRepository
+import com.pdfliteai.telemetry.TelemetryConfig
+import com.pdfliteai.telemetry.TelemetryManager
+import com.pdfliteai.telemetry.TelemetryUploadWorker
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
+import java.util.concurrent.TimeUnit
 
 class PdfLiteApp : Application() {
     override fun onCreate() {
         super.onCreate()
-        // ✅ REQUIRED for pdfbox-android
         PDFBoxResourceLoader.init(this)
+
+        val repo = SettingsRepository(this)
+        val cfg = TelemetryConfig(
+            baseUrl = BuildConfig.TELEMETRY_BASE_URL,
+            authToken = null,
+            appVersion = BuildConfig.VERSION_NAME
+        )
+
+        Log.d(
+            "Telemetry",
+            "PdfLiteApp.onCreate baseUrl=${cfg.baseUrl} tokenPresent=${!cfg.authToken.isNullOrBlank()}"
+        )
+
+        TelemetryManager.init(
+            context = this,
+            config = cfg,
+            userIdProvider = { repo.getTelemetryPrefsOnce().userId },
+            profileProvider = { repo.getUserProfileOnce() }
+        )
+
+        val req = PeriodicWorkRequestBuilder<TelemetryUploadWorker>(6, TimeUnit.HOURS)
+            .setConstraints(Constraints(requiredNetworkType = NetworkType.CONNECTED))
+            .build()
+
+        WorkManager.getInstance(this)
+            .enqueueUniquePeriodicWork("telemetry_flush", ExistingPeriodicWorkPolicy.KEEP, req)
     }
 }

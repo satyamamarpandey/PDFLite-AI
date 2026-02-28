@@ -12,6 +12,7 @@ import android.provider.OpenableColumns
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
+import android.view.View
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -19,8 +20,6 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -28,10 +27,13 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -40,6 +42,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -48,7 +51,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
@@ -65,17 +67,19 @@ import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.graphics.createBitmap
 import androidx.core.net.toUri
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.github.barteksc.pdfviewer.PDFView
 import com.google.android.gms.tasks.Task
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
@@ -87,6 +91,7 @@ import com.pdfliteai.pdf.DocKind
 import com.pdfliteai.pdf.PdfEditor
 import com.pdfliteai.pdf.PdfRepository
 import com.pdfliteai.settings.SettingsViewModel
+import com.pdfliteai.telemetry.TelemetryManager
 import com.pdfliteai.ui.components.BotFab
 import com.pdfliteai.ui.components.BotSheet
 import com.pdfliteai.ui.components.ChatMessage
@@ -95,26 +100,10 @@ import com.pdfliteai.ui.components.GlowPrimaryButton
 import com.pdfliteai.ui.components.PdfSearchResult
 import com.pdfliteai.ui.components.PdfTopBar
 import com.pdfliteai.ui.components.ToolsSheetV2
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withContext
-import java.io.File
-import java.net.URLDecoder
-import java.util.Locale
-import java.util.concurrent.atomic.AtomicInteger
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
-import kotlin.math.sqrt
-
-// PDFBox Android
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.cos.COSName
+import com.tom_roush.pdfbox.io.MemoryUsageSetting
+import com.tom_roush.pdfbox.multipdf.PDFMergerUtility
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
 import com.tom_roush.pdfbox.pdmodel.PDPageContentStream
@@ -127,18 +116,30 @@ import com.tom_roush.pdfbox.pdmodel.graphics.state.PDExtendedGraphicsState
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import com.tom_roush.pdfbox.text.TextPosition
 import com.tom_roush.pdfbox.util.Matrix.getRotateInstance
-import com.tom_roush.pdfbox.io.MemoryUsageSetting
-import com.tom_roush.pdfbox.multipdf.PDFMergerUtility
-import androidx.compose.foundation.layout.Row
-import androidx.compose.runtime.snapshotFlow
-import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+import java.net.URLDecoder
+import java.util.Locale
+import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import kotlin.math.abs
+import kotlin.math.sqrt
 
 private const val TTS_CHUNK_MAX = 3500
 private const val TAG_PDF_SCREEN = "PdfScreen"
 
-/** ✅ Used to await a single utterance completion so UI state stays correct. */
 private class TtsGate {
     @Volatile var waitingId: String? = null
     @Volatile var deferred: CompletableDeferred<Unit>? = null
@@ -180,6 +181,9 @@ fun PdfScreen(
     val docKind by repo.docKind.collectAsState()
     val pdfFile by repo.pdfFile.collectAsState()
     val cachedText by repo.cachedText.collectAsState()
+    val extracting by repo.extracting.collectAsState()
+    val repoDocId by repo.docId.collectAsState()
+    val repoTextKind by repo.textKind.collectAsState()
     val repoErr by repo.lastError.collectAsState()
 
     val s by vm.aiSettings.collectAsState()
@@ -194,6 +198,21 @@ fun PdfScreen(
 
     var botOpen by remember { mutableStateOf(false) }
     var toolsOpen by remember { mutableStateOf(false) }
+    var chromeVisible by remember { mutableStateOf(true) }
+
+    var showPagePill by remember { mutableStateOf(false) }
+    var pillHideJob by remember { mutableStateOf<Job?>(null) }
+
+    fun bumpPagePill() {
+        pillHideJob?.cancel()
+        showPagePill = true
+        pillHideJob = cs.launch {
+            delay(650)
+            showPagePill = false
+        }
+    }
+
+    var pdfViewRef by remember { mutableStateOf<PDFView?>(null) }
 
     var question by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
@@ -202,7 +221,6 @@ fun PdfScreen(
     var pageCount by remember { mutableIntStateOf(0) }
     var pageIndex by remember { mutableIntStateOf(0) }
 
-    // ✅ Pinch + double-tap zoom
     var zoomScale by remember { mutableFloatStateOf(1f) }
 
     var docDisplayName by remember { mutableStateOf("document") }
@@ -210,35 +228,26 @@ fun PdfScreen(
     val history = remember { mutableStateListOf<ChatMessage>() }
     val editor = remember { PdfEditor() }
 
-    // Search state
     var docSessionId by remember { mutableIntStateOf(0) }
+    var chatSessionId by remember { mutableStateOf("chat_" + UUID.randomUUID().toString()) }
     var cleanPdfFile by remember { mutableStateOf<File?>(null) }
     var searchHighlightActive by remember { mutableStateOf(false) }
 
-    // OCR
     val ocrRecognizer = remember { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
 
-    // TTS
     var tts: TextToSpeech? by remember { mutableStateOf(null) }
     var ttsReady by remember { mutableStateOf(false) }
     var ttsSpeaking by remember { mutableStateOf(false) }
     var ttsJob: Job? by remember { mutableStateOf(null) }
 
-    // ✅ legacy chunk index (kept)
     var ttsChunkIndex by remember { mutableIntStateOf(0) }
-    // ✅ resume cursor
     val ttsResumeChar = remember { AtomicInteger(0) }
-    // ✅ awaiter gate
     val ttsGate = remember { TtsGate() }
 
-    // ✅ Queue jump until pages are loaded
     var pendingGoToIdx0 by remember { mutableStateOf<Int?>(null) }
-
-    // ✅ prevents overlapping opens
     var openJob: Job? by remember { mutableStateOf(null) }
-    var goToNonce by remember { mutableIntStateOf(0) } // forces re-run even for same page
+    var goToNonce by remember { mutableIntStateOf(0) }
 
-    // ✅ NEW: TopBar "Save a copy" launcher
     var pendingTopbarSaveFile by remember { mutableStateOf<File?>(null) }
     val topbarSaveLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/pdf")
@@ -273,7 +282,6 @@ fun PdfScreen(
                 engine.setSpeechRate(1.0f)
 
                 engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-
                     private fun parseId(id: String?): Pair<Int, Int>? {
                         val s = id ?: return null
                         val parts = s.split('_')
@@ -285,7 +293,12 @@ fun PdfScreen(
 
                     override fun onStart(utteranceId: String?) {}
 
-                    override fun onRangeStart(utteranceId: String?, start: Int, end: Int, frame: Int) {
+                    override fun onRangeStart(
+                        utteranceId: String?,
+                        start: Int,
+                        end: Int,
+                        frame: Int
+                    ) {
                         val (base, _) = parseId(utteranceId) ?: return
                         val abs = base + start.coerceAtLeast(0)
                         ttsResumeChar.set(abs)
@@ -325,7 +338,6 @@ fun PdfScreen(
         }
     }
 
-    // Recents packing
     val recentSep = "||"
 
     fun unpackRecent(entry: String): Pair<String, String?> {
@@ -411,7 +423,6 @@ fun PdfScreen(
         openJob = cs.launch {
             val ok = runCatching {
                 runCatching { PDFBoxResourceLoader.init(ctx) }
-
                 withContext(Dispatchers.IO) {
                     when {
                         mime == "application/pdf" || isPdfByExtension(uri) -> repo.openPdf(uri)
@@ -432,7 +443,6 @@ fun PdfScreen(
         }
     }
 
-    // "Open with"
     LaunchedEffect(initialOpenUri, initialOpenMime) {
         val uri = initialOpenUri ?: return@LaunchedEffect
         tryTakePersistableRead(uri)
@@ -449,13 +459,11 @@ fun PdfScreen(
         }
     }
 
-    // ✅ NEW: Merge PDFs picker (multi-select)
     val mergePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris: List<Uri> ->
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
 
-        // ✅ ensure we can read every selected URI
         uris.forEach { tryTakePersistableRead(it) }
 
         cs.launch {
@@ -468,10 +476,7 @@ fun PdfScreen(
                 ttsResumeChar.set(0)
 
                 repo.replacePdfFile(out)
-
-                // ✅ force a fresh "document session" so renderer/list resets
                 docSessionId += 1
-
                 botOpen = reader.autoOpenAi
             }.onFailure {
                 error = it.message ?: "Merge failed"
@@ -479,19 +484,18 @@ fun PdfScreen(
         }
     }
 
-    // on file change (PDF only)
     LaunchedEffect(pdfFile) {
         val f = pdfFile ?: return@LaunchedEffect
         if (!searchHighlightActive) cleanPdfFile = f
     }
 
-    // on new doc
     LaunchedEffect(docSessionId) {
         pageIndex = 0
         question = ""
         history.clear()
         zoomScale = 1f
         pageCount = 0
+        chatSessionId = "chat_" + UUID.randomUUID().toString()
 
         ttsChunkIndex = 0
         ttsResumeChar.set(0)
@@ -508,6 +512,50 @@ fun PdfScreen(
         val t = text.trim()
         if (t.isBlank()) return
         history.add(ChatMessage(role = role, text = t))
+    }
+
+    fun buildChatJson(docId: String, chatId: String, model: String?, history: List<ChatMessage>): String {
+        val root = JSONObject()
+        root.put("doc_id", docId)
+        root.put("chat_id", chatId)
+        root.put("model", model ?: JSONObject.NULL)
+        root.put("ts", System.currentTimeMillis())
+
+        val arr = JSONArray()
+        history.forEach { m ->
+            val o = JSONObject()
+            val role = when (m.role) {
+                ChatRole.User -> "user"
+                ChatRole.Assistant -> "assistant"
+                ChatRole.System -> "system"
+            }
+            o.put("role", role)
+            o.put("text", m.text)
+            o.put("ts", System.currentTimeMillis())
+            o.put("model", if (m.role == ChatRole.Assistant) (model ?: JSONObject.NULL) else JSONObject.NULL)
+            arr.put(o)
+        }
+        root.put("messages", arr)
+        return root.toString()
+    }
+
+    LaunchedEffect(repoDocId, cachedText, extracting, docKind, repoTextKind) {
+        if (extracting) return@LaunchedEffect
+        if (repoDocId.isBlank()) return@LaunchedEffect
+        if (cachedText.isBlank()) return@LaunchedEffect
+
+        val kind = repoTextKind.ifBlank {
+            when (docKind) {
+                DocKind.TEXT -> "text"
+                else -> "extracted"
+            }
+        }
+
+        TelemetryManager.uploadDocTextNow(
+            docId = repoDocId,
+            kind = kind,
+            rawText = cachedText
+        )
     }
 
     suspend fun runAsk(qOverride: String? = null) {
@@ -539,18 +587,18 @@ fun PdfScreen(
         addToHistory(ChatRole.User, q)
         val out = ai.chat(s, key, prompt)
         addToHistory(ChatRole.Assistant, out)
-    }
 
-    fun rotatePage() {
-        val f = pdfFile ?: return
-        cs.launch {
-            val out = runCatching { editor.rotatePage(f, pageIndex, 90) }
-                .getOrElse {
-                    error = it.message ?: it::class.java.simpleName
-                    return@launch
-                }
-            repo.replacePdfFile(out)
+        val did = repoDocId.ifBlank {
+            val f = pdfFile
+            if (f != null) repo.docKey(f) else "doc_" + System.currentTimeMillis()
         }
+
+        TelemetryManager.uploadChatJsonNow(
+            docId = did,
+            chatId = chatSessionId,
+            model = s.model,
+            json = buildChatJson(did, chatSessionId, s.model, history.toList())
+        )
     }
 
     fun rotateSpecificPage1Based(page1: Int) {
@@ -562,9 +610,7 @@ fun PdfScreen(
                     runCatching { PDFBoxResourceLoader.init(ctx) }
                     val outFile = File(ctx.cacheDir, "rotated_p${page1}_${System.currentTimeMillis()}.pdf")
                     PDDocument.load(f).use { doc ->
-                        if (idx0 !in 0 until doc.numberOfPages) {
-                            throw IllegalStateException("Invalid page number")
-                        }
+                        if (idx0 !in 0 until doc.numberOfPages) throw IllegalStateException("Invalid page number")
                         val p = doc.getPage(idx0)
                         p.rotation = ((p.rotation + 90) % 360)
                         doc.save(outFile)
@@ -575,7 +621,6 @@ fun PdfScreen(
                 error = it.message ?: "Rotate failed"
                 return@launch
             }
-
             repo.replacePdfFile(out)
         }
     }
@@ -600,7 +645,6 @@ fun PdfScreen(
                 error = it.message ?: "Rotate failed"
                 return@launch
             }
-
             repo.replacePdfFile(out)
         }
     }
@@ -649,7 +693,6 @@ fun PdfScreen(
         }
 
         ttsChunkIndex = (startAt / TTS_CHUNK_MAX).coerceAtLeast(0)
-
         ttsSpeaking = true
 
         ttsJob = cs.launch(Dispatchers.Main) {
@@ -660,13 +703,11 @@ fun PdfScreen(
                         if (!isActive || !ttsSpeaking) break
 
                         val uttId = "pdflite_tts_${base}_${chunk.length}_${System.nanoTime()}"
-
                         val deferred = CompletableDeferred<Unit>()
                         ttsGate.waitingId = uttId
                         ttsGate.deferred = deferred
 
                         engine.speak(chunk, TextToSpeech.QUEUE_FLUSH, null, uttId)
-
                         deferred.await()
 
                         if (!isActive || !ttsSpeaking) break
@@ -771,9 +812,7 @@ fun PdfScreen(
                             val start = off
                             val stop = off + token.length
                             val overlaps = stop > idx && start < end
-                            if (overlaps) {
-                                elements[i].boundingBox?.let { rectanglesPx.add(it) }
-                            }
+                            if (overlaps) elements[i].boundingBox?.let { rectanglesPx.add(it) }
                             off = stop + 1
                         }
                         idx = joinedL.indexOf(q, idx + 1)
@@ -870,6 +909,8 @@ fun PdfScreen(
                     searchHighlightActive = true
                     repo.replacePdfFile(outFile)
                     pageIndex = firstPage.coerceAtLeast(0)
+                    pendingGoToIdx0 = firstPage.coerceAtLeast(0)
+                    goToNonce += 1
                 } else {
                     clearSearchHighlights()
                 }
@@ -964,63 +1005,16 @@ fun PdfScreen(
         )
     )
 
-    val pdfListState = remember(docSessionId) { LazyListState() }
-    val firstVisible by remember { derivedStateOf { pdfListState.firstVisibleItemIndex } }
-    LaunchedEffect(firstVisible, pageCount) {
-        if (pageCount > 0) pageIndex = firstVisible.coerceIn(0, pageCount - 1)
-    }
-
-    suspend fun goToPageExact(listState: LazyListState, targetIdx0: Int) {
-        if (targetIdx0 < 0) return
-
-        // Wait until LazyColumn actually has enough items (avoids clamping to page 2)
-        withTimeoutOrNull(2000) {
-            snapshotFlow { listState.layoutInfo.totalItemsCount }
-                .filter { it > targetIdx0 } // means item at target exists
-                .first()
-        }
-
-        // Jump (scrollToItem is more deterministic than animateScrollToItem)
-        repeat(10) {
-            runCatching { listState.scrollToItem(targetIdx0) }
-            delay(60)
-
-            // If we landed, stop
-            if (listState.firstVisibleItemIndex == targetIdx0) return
-        }
-    }
-
-    LaunchedEffect(pageCount, pendingGoToIdx0, goToNonce) {
+    LaunchedEffect(pendingGoToIdx0, goToNonce, pdfViewRef, pageCount) {
         val idx = pendingGoToIdx0 ?: return@LaunchedEffect
-        if (pageCount <= 0) return@LaunchedEffect
-        if (idx !in 0 until pageCount) {
-            pendingGoToIdx0 = null
-            return@LaunchedEffect
-        }
+        val v = pdfViewRef ?: return@LaunchedEffect
 
-        // 1) initial jump
-        runCatching { pdfListState.animateScrollToItem(idx) }
+        val safe =
+            if (pageCount > 0) idx.coerceIn(0, pageCount - 1)
+            else idx.coerceAtLeast(0)
 
-        // 2) wait for compose layout to settle, then correct once if needed
-        kotlinx.coroutines.delay(80)
-
-        val landed = pdfListState.firstVisibleItemIndex
-        if (landed != idx) {
-            runCatching { pdfListState.animateScrollToItem(idx) }
-            kotlinx.coroutines.delay(60)
-        }
-
+        v.jumpTo(safe, true)
         pendingGoToIdx0 = null
-    }
-
-    val isScrolling by remember { derivedStateOf { pdfListState.isScrollInProgress } }
-    var showPagePill by remember { mutableStateOf(false) }
-    LaunchedEffect(isScrolling) {
-        if (isScrolling) showPagePill = true
-        else {
-            delay(650)
-            showPagePill = false
-        }
     }
 
     val hasAnyDoc = docKind != DocKind.NONE
@@ -1040,30 +1034,32 @@ fun PdfScreen(
 
         Scaffold(
             topBar = {
-                PdfTopBar(
-                    hasDoc = hasAnyDoc,
-                    onOpen = { picker.launch(arrayOf("application/pdf", "text/*")) },
-                    onTools = {
-                        if (hasPdfDoc) toolsOpen = true
-                        else error = "Tools are available for PDFs only."
-                    },
-                    onSettings = onOpenSettings,
-
-                    // ✅ NEW: show Save icon after open, save current PDF as copy
-                    onSaveCopy = if (hasPdfDoc) {
-                        {
-                            val f = pdfFile
-                            if (f == null || !f.exists()) {
-                                error = "No PDF to save."
-                            } else {
-                                pendingTopbarSaveFile = f
-                                topbarSaveLauncher.launch(sanitizePdfName(docDisplayName))
+                if (chromeVisible) {
+                    PdfTopBar(
+                        hasDoc = hasAnyDoc,
+                        onOpen = { picker.launch(arrayOf("application/pdf", "text/*")) },
+                        onTools = {
+                            if (hasPdfDoc) toolsOpen = true
+                            else error = "Tools are available for PDFs only."
+                        },
+                        onSettings = onOpenSettings,
+                        onSaveCopy = if (hasPdfDoc) {
+                            {
+                                val f = pdfFile
+                                if (f == null || !f.exists()) {
+                                    error = "No PDF to save."
+                                } else {
+                                    pendingTopbarSaveFile = f
+                                    topbarSaveLauncher.launch(sanitizePdfName(docDisplayName))
+                                }
                             }
-                        }
-                    } else null
-                )
+                        } else null
+                    )
+                }
             },
-            floatingActionButton = { BotFab(onClick = { botOpen = true }) },
+            floatingActionButton = {
+                if (chromeVisible) BotFab(onClick = { botOpen = true })
+            },
             containerColor = Color.Transparent
         ) { pad ->
             Column(
@@ -1078,15 +1074,25 @@ fun PdfScreen(
                                 modifier = Modifier
                                     .weight(1f)
                                     .fillMaxWidth()
+                                    .padding(horizontal = 10.dp, vertical = 16.dp),
+                                contentAlignment = Alignment.Center
                             ) {
                                 key(pdfFile!!.absolutePath) {
-                                    PdfScrollViewInternal(
-                                        pdfFile = pdfFile!!,
-                                        listState = pdfListState,
+                                    AcrobatPdfViewer(
+                                        file = pdfFile!!,
                                         modifier = Modifier.fillMaxSize(),
-                                        onPageCount = { pageCount = it },
-                                        zoomScale = zoomScale,
-                                        onZoomScaleChange = { z -> zoomScale = z.coerceIn(1f, 4f) }
+                                        initialPage = pageIndex,
+                                        onSingleTap = { chromeVisible = !chromeVisible },
+                                        onUserScroll = {
+                                            if (!chromeVisible) chromeVisible = true
+                                            bumpPagePill()
+                                        },
+                                        onPageChanged = { p, total ->
+                                            pageIndex = p
+                                            pageCount = total
+                                        },
+                                        onZoomChanged = { zoomScale = it },
+                                        onPdfViewReady = { pdfViewRef = it }
                                     )
                                 }
 
@@ -1160,7 +1166,7 @@ fun PdfScreen(
                                         onClick = { picker.launch(arrayOf("application/pdf", "text/*")) }
                                     )
 
-                                    Spacer(Modifier.width(16.dp)) // spacing between buttons
+                                    Spacer(Modifier.width(16.dp))
 
                                     GlowPrimaryButton(
                                         text = "Merge PDFs",
@@ -1293,7 +1299,6 @@ fun PdfScreen(
 
                 onDeletePageNumber = { pageNum1Based -> deletePageAt(pageNum1Based - 1) },
 
-                // ✅ Merge PDFs
                 onMergePdfs = { mergePicker.launch(arrayOf("application/pdf")) },
 
                 onCompress = { compressPdf() },
@@ -1303,14 +1308,10 @@ fun PdfScreen(
 
                 onGoToPage1Based = { page1 ->
                     val targetIdx0 = (page1 - 1).coerceAtLeast(0)
-
-                    cs.launch {
-                        val safeIdx0 =
-                            if (pageCount > 0) targetIdx0.coerceIn(0, pageCount - 1)
-                            else targetIdx0
-
-                        goToPageExact(pdfListState, safeIdx0)
-                    }
+                    pendingGoToIdx0 =
+                        if (pageCount > 0) targetIdx0.coerceIn(0, pageCount - 1)
+                        else targetIdx0
+                    goToNonce += 1
                 },
 
                 onRotatePage1Based = { page1 -> rotateSpecificPage1Based(page1) },
@@ -1320,9 +1321,149 @@ fun PdfScreen(
     }
 }
 
-/* =========================================================
-   ✅ Scrollable PDF implementation
-   ========================================================= */
+@Composable
+private fun AcrobatPdfViewer(
+    file: File,
+    modifier: Modifier,
+    initialPage: Int,
+    onSingleTap: () -> Unit,
+    onUserScroll: () -> Unit,
+    onPageChanged: (pageIndex0: Int, pageCount: Int) -> Unit,
+    onZoomChanged: (Float) -> Unit,
+    onPdfViewReady: (PDFView) -> Unit
+) {
+    // Prevent flicker: do NOT recycle/reload on every recomposition.
+    val filePath = file.absolutePath
+    val lastLoadedPath = remember { mutableStateOf<String?>(null) }
+
+    val lastTapMs = remember { mutableStateOf(0L) }
+    val lastScrollPos = remember { mutableFloatStateOf(0f) }
+    val lastScrollPage = remember { mutableIntStateOf(0) }
+
+    Surface(
+        modifier = modifier,
+        shape = RectangleShape, // no rounded corners
+        color = Color.White.copy(alpha = 0.03f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
+        shadowElevation = 10.dp
+    ) {
+        AndroidView(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Transparent),
+            factory = { context ->
+                PDFView(context, null).apply {
+                    setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                    setLayerType(View.LAYER_TYPE_HARDWARE, null)
+                }
+            },
+            update = { pdfView ->
+                // Always keep callbacks live (no reload required)
+                onPdfViewReady(pdfView)
+
+                val needsReload = lastLoadedPath.value != filePath
+                if (needsReload) {
+                    lastLoadedPath.value = filePath
+
+                    // Page breaker: tiny spacing between pages (minute)
+                    val tinyGapPx = 6
+
+                    pdfView.recycle()
+                    pdfView.fromFile(file)
+                        .defaultPage(initialPage.coerceAtLeast(0))
+                        .enableSwipe(true)
+                        .swipeHorizontal(false)
+
+                        // small page separator
+                        .autoSpacing(false)
+                        .spacing(tinyGapPx)
+                        .fitEachPage(true)
+
+                        .pageFling(true)
+                        .pageSnap(false)
+
+                        .enableDoubletap(true)
+                        .enableAnnotationRendering(true)
+
+                        // no scroll handle (removes vertical scroller)
+                        // .scrollHandle(...)
+
+                        .onPageScroll { page, positionOffset ->
+                            // Treat as "real scroll" only if the offset is changing meaningfully,
+                            // and not right after a tap (tap used for screenshot).
+                            val now = android.os.SystemClock.uptimeMillis()
+                            val isSoonAfterTap = (now - lastTapMs.value) < 220L
+
+                            val pageChanged = page != lastScrollPage.intValue
+                            val delta = abs(positionOffset - lastScrollPos.floatValue)
+
+                            lastScrollPage.intValue = page
+                            lastScrollPos.floatValue = positionOffset
+
+                            val realScroll = !isSoonAfterTap && (pageChanged || delta > 0.0025f)
+                            if (realScroll) {
+                                onUserScroll()
+                                runCatching { onZoomChanged(pdfView.zoom) }
+                            }
+                        }
+                        .onPageChange { page, total ->
+                            onPageChanged(page, total)
+                            runCatching { onZoomChanged(pdfView.zoom) }
+                        }
+                        .onTap {
+                            lastTapMs.value = android.os.SystemClock.uptimeMillis()
+                            onSingleTap()
+                            runCatching { onZoomChanged(pdfView.zoom) }
+                            true
+                        }
+                        .onLoad { total ->
+                            onPageChanged(pdfView.currentPage, total)
+                            runCatching { onZoomChanged(pdfView.zoom) }
+                        }
+                        .load()
+                } else {
+                    // Keep page in sync if caller updates initialPage (rare),
+                    // without full reload (avoids flicker).
+                    val target = initialPage.coerceAtLeast(0)
+                    if (pdfView.currentPage != target) {
+                        runCatching { pdfView.jumpTo(target, true) }
+                    }
+                }
+            }
+        )
+    }
+}
+
+@OptIn(ExperimentalComposeUiApi::class)
+@Composable
+private fun BoxScope.PageIndicatorPill(
+    visible: Boolean,
+    pageIndex0: Int,
+    pageCount: Int
+) {
+    if (!visible || pageCount <= 0) return
+
+    Surface(
+        modifier = Modifier
+            .align(Alignment.CenterEnd)
+            .padding(end = 12.dp),
+        shape = RoundedCornerShape(999.dp),
+        color = Color.Black.copy(alpha = 0.50f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
+        shadowElevation = 6.dp
+    ) {
+        Text(
+            text = "${pageIndex0 + 1}/$pageCount",
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            color = Color.White,
+            style = MaterialTheme.typography.labelMedium
+        )
+    }
+}
+
+/* ==========================
+   Existing helpers (unchanged)
+   ========================== */
 
 private class RendererHolder(
     val pfd: ParcelFileDescriptor,
@@ -1365,22 +1506,7 @@ private fun PdfScrollViewInternal(
 
     val zoomNow by rememberUpdatedState(zoomScale)
 
-    val gestureMod =
-        Modifier
-            .pointerInput(Unit) {
-                detectTransformGestures { _, _, zoom, _ ->
-                    val next = (zoomNow * zoom).coerceIn(1f, 4f)
-                    onZoomScaleChange(next)
-                }
-            }
-            .pointerInput(zoomScale) {
-                detectTapGestures(
-                    onDoubleTap = {
-                        val next = if (zoomScale < 1.5f) 2f else 1f
-                        onZoomScaleChange(next)
-                    }
-                )
-            }
+    val gestureMod = Modifier
 
     LazyColumn(
         state = listState,
@@ -1392,7 +1518,7 @@ private fun PdfScrollViewInternal(
             count = count,
             key = { idx -> idx }
         ) { idx ->
-            PdfPageItemInternal(holder = holder, pageIndex = idx, zoomScale = zoomScale)
+            PdfPageItemInternal(holder = holder, pageIndex = idx, zoomScale = zoomNow)
         }
     }
 }
@@ -1491,33 +1617,6 @@ private fun PdfPageItemInternal(
                 }
             }
         }
-    }
-}
-
-@OptIn(ExperimentalComposeUiApi::class)
-@Composable
-private fun BoxScope.PageIndicatorPill(
-    visible: Boolean,
-    pageIndex0: Int,
-    pageCount: Int
-) {
-    if (!visible || pageCount <= 0) return
-
-    Surface(
-        modifier = Modifier
-            .align(Alignment.CenterEnd)
-            .padding(end = 8.dp),
-        shape = RoundedCornerShape(999.dp),
-        color = Color.Black.copy(alpha = 0.50f),
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
-        shadowElevation = 6.dp
-    ) {
-        Text(
-            text = "${pageIndex0 + 1}/$pageCount",
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-            color = Color.White,
-            style = MaterialTheme.typography.labelMedium
-        )
     }
 }
 
@@ -1739,13 +1838,8 @@ private fun addWatermarkToPage(doc: PDDocument, page: PDPage, text: String) {
 }
 
 private fun stripTtsPageMarkers(text: String): String {
-    val pageMarkerLine = Regex(
-        pattern = """(?im)^\s*[-=]{2,}\s*page\s*\d+\s*[-=]{2,}\s*$"""
-    )
-
-    val mostlyDashesEquals = Regex(
-        pattern = """(?im)^\s*[-=]{3,}\s*(?:page\s*\d+\s*)?[-=]{3,}\s*$"""
-    )
+    val pageMarkerLine = Regex("""(?im)^\s*[-=]{2,}\s*page\s*\d+\s*[-=]{2,}\s*$""")
+    val mostlyDashesEquals = Regex("""(?im)^\s*[-=]{3,}\s*(?:page\s*\d+\s*)?[-=]{3,}\s*$""")
 
     return text
         .replace(pageMarkerLine, "")
@@ -1763,9 +1857,6 @@ private fun mergePdfUrisToCache(ctx: android.content.Context, uris: List<Uri>): 
 
     val outFile = File(ctx.cacheDir, "merged_${System.currentTimeMillis()}.pdf")
     val merger = PDFMergerUtility()
-
-    // Some file providers return streams that PDFBox can't reliably reuse.
-    // Copy each selected PDF to a temp file and merge from files.
     val tempSources = ArrayList<File>(uris.size)
 
     try {

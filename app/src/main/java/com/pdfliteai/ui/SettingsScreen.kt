@@ -318,19 +318,6 @@ fun SettingsScreen(
                                 context.startActivity(intent)
                             },
                             modifier = Modifier
-                                .fillMaxWidth(0.66f)
-                                .height(58.dp), // ✅ taller + obvious
-                            shape = RoundedCornerShape(24.dp),
-                            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 18.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
-                                contentColor = Color.White
-                            ),
-                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.26f)),
-                            elevation = ButtonDefaults.buttonElevation(
-                                defaultElevation = 14.dp,
-                                pressedElevation = 4.dp
-                            )
                         ) {
                             Text(
                                 "Legal & Support",
@@ -375,20 +362,20 @@ private fun ProviderGridBig(
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                ProviderTile("NOVA Micro", selected == ProviderId.GROQ) { onSelect(ProviderId.GROQ) }
-                ProviderTile("OpenRouter", selected == ProviderId.OPENROUTER) { onSelect(ProviderId.OPENROUTER) }
+                ProviderTile("Smart Mode", selected == ProviderId.GROQ) { onSelect(ProviderId.GROQ) }
+                ProviderTile("Extended Processing", selected == ProviderId.OPENROUTER) { onSelect(ProviderId.OPENROUTER) }
             }
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                ProviderTile("NOVA", selected == ProviderId.NOVA) { onSelect(ProviderId.NOVA) }
-                ProviderTile("Local", selected == ProviderId.LOCAL_OPENAI_COMPAT) { onSelect(ProviderId.LOCAL_OPENAI_COMPAT) }
+                ProviderTile("Deep Analysis", selected == ProviderId.NOVA) { onSelect(ProviderId.NOVA) }
+                ProviderTile("On-Device (Private)", selected == ProviderId.LOCAL_OPENAI_COMPAT) { onSelect(ProviderId.LOCAL_OPENAI_COMPAT) }
             }
         }
     } else {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-            ProviderTile("NOVA Micro", selected == ProviderId.GROQ) { onSelect(ProviderId.GROQ) }
-            ProviderTile("OpenRouter", selected == ProviderId.OPENROUTER) { onSelect(ProviderId.OPENROUTER) }
-            ProviderTile("NOVA", selected == ProviderId.NOVA) { onSelect(ProviderId.NOVA) }
-            ProviderTile("Local", selected == ProviderId.LOCAL_OPENAI_COMPAT) { onSelect(ProviderId.LOCAL_OPENAI_COMPAT) }
+            ProviderTile("Smart Mode", selected == ProviderId.GROQ) { onSelect(ProviderId.GROQ) }
+            ProviderTile("Extended Processing", selected == ProviderId.OPENROUTER) { onSelect(ProviderId.OPENROUTER) }
+            ProviderTile("Deep Analysis", selected == ProviderId.NOVA) { onSelect(ProviderId.NOVA) }
+            ProviderTile("On-Device (Private)", selected == ProviderId.LOCAL_OPENAI_COMPAT) { onSelect(ProviderId.LOCAL_OPENAI_COMPAT) }
         }
     }
 }

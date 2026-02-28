@@ -6,13 +6,13 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.mutableStateOf
+import com.pdfliteai.telemetry.TelemetryManager
 import com.pdfliteai.ui.nav.AppNav
 import com.pdfliteai.ui.theme.PdfLiteTheme
 
 class MainActivity : ComponentActivity() {
 
     companion object {
-        // ✅ Compose-observable state (so UI reacts immediately)
         val pendingOpenUriState = mutableStateOf<Uri?>(null)
         val pendingOpenMimeState = mutableStateOf<String?>(null)
 
@@ -26,6 +26,11 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         handleIncomingIntent(intent)
+
+        TelemetryManager.log(
+            "app_open",
+            params = mapOf("cold" to (savedInstanceState == null).toString())
+        )
 
         setContent {
             PdfLiteTheme {
@@ -47,24 +52,28 @@ class MainActivity : ComponentActivity() {
 
         val uri = when (action) {
             Intent.ACTION_VIEW -> intent.data
-
             Intent.ACTION_SEND -> {
                 @Suppress("DEPRECATION")
                 intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri
             }
-
             Intent.ACTION_SEND_MULTIPLE -> {
                 @Suppress("DEPRECATION")
                 intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)?.firstOrNull()
             }
-
             else -> null
         } ?: return
 
         pendingOpenUriState.value = uri
         pendingOpenMimeState.value = intent.type ?: contentResolver.getType(uri)
 
-        // ✅ Persist read permission when possible (SAF URIs); ignore failures safely
+        TelemetryManager.log(
+            "intent_open",
+            params = mapOf(
+                "action" to (action ?: "unknown"),
+                "mime" to (intent.type ?: "unknown")
+            )
+        )
+
         if ((intent.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0) {
             try {
                 contentResolver.takePersistableUriPermission(

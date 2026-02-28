@@ -1,11 +1,23 @@
 // app/build.gradle.kts
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     id("org.jetbrains.kotlin.plugin.serialization") version "2.0.20"
 }
 
-// ✅ IMPORTANT: kotlin {} must be TOP-LEVEL (not inside android {})
+val localProps = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+
+val telemetryBaseUrl = localProps.getProperty("TELEMETRY_BASE_URL")
+    ?: "https://pdflite-ai-proxy.7satyampandey.workers.dev"
+
+// Lightweight app token (not a true secret, but used for gating/rate limits on Worker)
+val appToken = localProps.getProperty("APP_TOKEN") ?: ""
+
 kotlin {
     jvmToolchain(17)
 }
@@ -21,6 +33,9 @@ android {
         versionCode = 1
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        buildConfigField("String", "TELEMETRY_BASE_URL", "\"$telemetryBaseUrl\"")
+        buildConfigField("String", "APP_TOKEN", "\"$appToken\"")
     }
 
     buildTypes {
@@ -42,7 +57,6 @@ android {
         }
     }
 
-    // ✅ Java 17 compile options
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -53,8 +67,10 @@ android {
         buildConfig = true
     }
 
-    // ✅ Conservative excludes (avoid excluding *.kotlin_module)
     packaging {
+        jniLibs {
+            useLegacyPackaging = false
+        }
         resources {
             excludes += setOf(
                 "META-INF/LICENSE*",
@@ -88,14 +104,19 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 
-    // ✅ PDF editing / highlight / watermark / secure / merge
-    implementation("com.tom-roush:pdfbox-android:2.0.27.0")
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     debugImplementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
 
-    // ✅ OCR (Play Services ML Kit)
     implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.9.0")
+
+    implementation("androidx.work:work-runtime-ktx:2.9.0")
+
+    implementation("com.github.mhiew:android-pdf-viewer:3.2.0-beta.1") {
+        exclude(group = "com.android.support")
+    }
+
+    implementation("com.google.android.gms:play-services-auth:21.2.0")
 }

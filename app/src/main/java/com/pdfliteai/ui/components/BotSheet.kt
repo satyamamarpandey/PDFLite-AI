@@ -434,10 +434,10 @@ private fun ProviderPicker(
 
     val providers = remember {
         listOf(
-            ProviderId.GROQ to "NOVA Micro",
-            ProviderId.NOVA to "NOVA",
-            ProviderId.OPENROUTER to "OpenRouter",
-            ProviderId.LOCAL_OPENAI_COMPAT to "Local"
+            ProviderId.GROQ to "Smart Mode",
+            ProviderId.NOVA to "Deep Analysis",
+            ProviderId.OPENROUTER to "Extended Processing",
+            ProviderId.LOCAL_OPENAI_COMPAT to "On-Device (Private)"
         )
     }
     val label = providers.firstOrNull { it.first == provider }?.second ?: provider.name
