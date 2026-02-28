@@ -36,6 +36,12 @@ android {
 
         buildConfigField("String", "TELEMETRY_BASE_URL", "\"$telemetryBaseUrl\"")
         buildConfigField("String", "APP_TOKEN", "\"$appToken\"")
+
+        // ✅ Default ABI set (applies unless overridden per buildType below)
+        // Keep it broad enough for real devices.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     buildTypes {
@@ -43,12 +49,25 @@ android {
             isMinifyEnabled = false
             isShrinkResources = false
             isDebuggable = true
+
+            // ✅ Allow emulator (x86_64) for debug/dev only.
+            // (This is usually where the 16KB warning shows up.)
+            ndk {
+                abiFilters.clear()
+                abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+            }
         }
 
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             isDebuggable = false
+
+            // ✅ Release: ship only ARM to avoid x86_64 native libs that are often 16KB-misaligned.
+            ndk {
+                abiFilters.clear()
+                abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+            }
 
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
