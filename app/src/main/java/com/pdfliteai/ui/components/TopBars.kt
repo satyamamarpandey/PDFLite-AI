@@ -1,24 +1,26 @@
+// TopBars.kt
 package com.pdfliteai.ui.components
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Save
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -34,6 +36,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -47,9 +50,13 @@ fun PdfTopBar(
     onSettings: () -> Unit,
     onSaveCopy: (() -> Unit)? = null
 ) {
-    val primary = MaterialTheme.colorScheme.primary
-    val barColor = Color.Black.copy(alpha = 0.26f)
+    val barColor = Color.Black.copy(alpha = 0.28f)
     val border = Color.White.copy(alpha = 0.10f)
+
+    val openTint = Color(0xFFFCAB99)
+    val saveTint = Color(0xFF9BEF88)
+    val toolsTint = Color(0xFFD5B96F)
+    val settingsTint = Color(0xFF999DF6)
 
     Surface(color = Color.Transparent, tonalElevation = 0.dp, shadowElevation = 0.dp) {
         Surface(
@@ -65,55 +72,75 @@ fun PdfTopBar(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    // tighter overall height
-                    .padding(horizontal = 14.dp, vertical = 9.dp),
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                PremiumTitle(primary = primary)
+                PremiumTitle()
 
-                // keeps title on left + actions on right
                 Spacer(Modifier.weight(1f))
 
-                // ensures Open never feels too close to the title on tighter widths
-                Spacer(Modifier.width(14.dp))
-
-                if (hasDoc) {
-                    // Smaller, premium pill (NO glow)
-                    MiniPrimaryPillButton(
-                        text = "Open",
-                        onClick = onOpen,
-                        primary = primary
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    PremiumActionButton(
+                        label = "Open",
+                        icon = { tint ->
+                            Icon(
+                                imageVector = Icons.Outlined.FolderOpen,
+                                contentDescription = "Open",
+                                tint = tint,
+                                modifier = Modifier.size(17.dp)
+                            )
+                        },
+                        tint = openTint,
+                        enabled = true,
+                        onClick = onOpen
                     )
 
-                    Spacer(Modifier.width(8.dp))
-
-                    if (onSaveCopy != null) {
-                        TopBarIconButton(onClick = onSaveCopy, enabled = true) {
+                    PremiumActionButton(
+                        label = "Save",
+                        icon = { tint ->
                             Icon(
                                 imageVector = Icons.Outlined.Save,
-                                contentDescription = "Save a copy",
-                                tint = Color.White
+                                contentDescription = "Save",
+                                tint = tint,
+                                modifier = Modifier.size(17.dp)
                             )
-                        }
-                        Spacer(Modifier.width(6.dp))
-                    }
-                }
-
-                TopBarIconButton(onClick = onTools, enabled = hasDoc) {
-                    Icon(
-                        imageVector = Icons.Filled.Tune,
-                        contentDescription = "Tools",
-                        tint = if (hasDoc) Color.White else Color.White.copy(alpha = 0.35f)
+                        },
+                        tint = saveTint,
+                        enabled = (hasDoc && onSaveCopy != null),
+                        onClick = { onSaveCopy?.invoke() }
                     )
-                }
 
-                Spacer(Modifier.width(6.dp))
+                    PremiumActionButton(
+                        label = "Tools",
+                        icon = { tint ->
+                            Icon(
+                                imageVector = Icons.Outlined.Tune,
+                                contentDescription = "Tools",
+                                tint = tint,
+                                modifier = Modifier.size(17.dp)
+                            )
+                        },
+                        tint = toolsTint,
+                        enabled = hasDoc,
+                        onClick = onTools
+                    )
 
-                TopBarIconButton(onClick = onSettings, enabled = true) {
-                    Icon(
-                        imageVector = Icons.Filled.Settings,
-                        contentDescription = "Settings",
-                        tint = Color.White
+                    PremiumActionButton(
+                        label = "Settings",
+                        icon = { tint ->
+                            Icon(
+                                imageVector = Icons.Outlined.Settings,
+                                contentDescription = "Settings",
+                                tint = tint,
+                                modifier = Modifier.size(17.dp)
+                            )
+                        },
+                        tint = settingsTint,
+                        enabled = true,
+                        onClick = onSettings
                     )
                 }
             }
@@ -122,42 +149,42 @@ fun PdfTopBar(
 }
 
 @Composable
-private fun PremiumTitle(primary: Color) {
+private fun PremiumTitle() {
     val markBg = Color.White.copy(alpha = 0.08f)
     val markStroke = Color.White.copy(alpha = 0.12f)
 
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    // ✅ non-purple accent for "AI"
+    val aiAccent = Color(0xFF7DD3FC) // ice blue
 
-        // Brand mark: use app icon (from drawable) instead of purple dot
+    Row(verticalAlignment = Alignment.CenterVertically) {
         Surface(
             color = markBg,
             border = BorderStroke(1.dp, markStroke),
-            shape = RoundedCornerShape(8.dp),
+            shape = RoundedCornerShape(10.dp),
             tonalElevation = 0.dp,
             shadowElevation = 0.dp,
-            modifier = Modifier.size(26.dp)
+            modifier = Modifier.size(32.dp)
         ) {
             Box(contentAlignment = Alignment.Center) {
                 Image(
                     painter = painterResource(id = R.drawable.pdfliteaiicon_playstore),
                     contentDescription = "PDFLite AI",
                     modifier = Modifier
-                        .size(18.dp)
-                        .clip(CircleShape),   // helps if image has white bg edges
+                        .size(22.dp)
+                        .clip(RoundedCornerShape(8.dp)),
                     contentScale = ContentScale.Crop
                 )
             }
         }
 
-        Spacer(Modifier.width(10.dp))
+        Spacer(Modifier.width(9.dp))
 
-        // One-line lockup: "PDFLite AI" (no pill, no circle around AI)
         Text(
             text = buildAnnotatedString {
                 withStyle(
                     SpanStyle(
                         color = Color.White,
-                        fontWeight = FontWeight.SemiBold
+                        fontWeight = FontWeight.ExtraBold
                     )
                 ) { append("PDFLite") }
 
@@ -165,80 +192,67 @@ private fun PremiumTitle(primary: Color) {
 
                 withStyle(
                     SpanStyle(
-                        color = primary.copy(alpha = 0.98f),
-                        fontWeight = FontWeight.Bold
+                        color = aiAccent,
+                        fontWeight = FontWeight.Black
                     )
                 ) { append("AI") }
             },
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
             style = MaterialTheme.typography.titleLarge.copy(
                 fontSize = 19.sp,
-                letterSpacing = 0.15.sp
+                letterSpacing = 0.20.sp
             )
         )
     }
 }
 
-/**
- * Small pill action button for "Open" (no glow, compact, premium)
- */
 @Composable
-private fun MiniPrimaryPillButton(
-    text: String,
-    onClick: () -> Unit,
-    primary: Color
-) {
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(999.dp),
-        color = primary.copy(alpha = 0.18f),
-        border = BorderStroke(1.dp, primary.copy(alpha = 0.40f)),
-        tonalElevation = 0.dp,
-        shadowElevation = 0.dp
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = Icons.Outlined.FolderOpen,
-                contentDescription = null,
-                tint = Color.White,
-                modifier = Modifier.size(16.dp)
-            )
-            Spacer(Modifier.width(6.dp))
-            Text(
-                text = text,
-                color = Color.White,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = 0.2.sp
-            )
-        }
-    }
-}
-
-/**
- * Consistent, premium icon buttons (slight background, tighter spacing)
- */
-@Composable
-private fun TopBarIconButton(
-    onClick: () -> Unit,
+private fun PremiumActionButton(
+    label: String,
+    tint: Color,
     enabled: Boolean,
-    content: @Composable () -> Unit
+    onClick: () -> Unit,
+    icon: @Composable (Color) -> Unit
 ) {
-    val bg = Color.White.copy(alpha = if (enabled) 0.06f else 0.03f)
+    val iconTint = if (enabled) tint else Color.White.copy(alpha = 0.28f)
+    val labelColor =
+        if (enabled) Color.White.copy(alpha = 0.88f) else Color.White.copy(alpha = 0.28f)
+
+    val bg = if (enabled) tint.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.04f)
+
     Surface(
         onClick = onClick,
         enabled = enabled,
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(14.dp),
         color = bg,
         border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
         tonalElevation = 0.dp,
         shadowElevation = 0.dp,
-        modifier = Modifier.size(38.dp)
+        modifier = Modifier
+            .width(54.dp)
+            .height(44.dp)
     ) {
-        Box(contentAlignment = Alignment.Center) {
-            content()
+        Column(
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            icon(iconTint)
+
+            Spacer(Modifier.height(1.dp))
+
+            Text(
+                text = label,
+                color = labelColor,
+                fontSize = 9.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 0.05.sp,
+                lineHeight = 10.sp,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Clip
+            )
         }
     }
 }
