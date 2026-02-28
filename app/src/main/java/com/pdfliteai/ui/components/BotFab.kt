@@ -11,7 +11,8 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.SmartToy
+import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -21,6 +22,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -44,48 +46,43 @@ fun BotFab(
         label = "botFabScale"
     )
 
-    // Size: premium but not huge
     val outer = 72.dp
     val inner = 58.dp
-    val badge = 38.dp
+    val badge = 40.dp
 
-    // Outer ring background: deep glass (not flat black)
-    val ringBg = Color.Black.copy(alpha = 0.26f)
-    val ringStroke = Color.White.copy(alpha = 0.18f)
+    // Outer ring
+    val ringBg = Color.Black.copy(alpha = 0.24f)
+    val ringStroke = Color.White.copy(alpha = 0.16f)
 
-    // Core gradient: richer + less “cartoon”
-    val coreGradient = Brush.linearGradient(
+    // Core gradient (more “glass”, less flat)
+    val coreGradient = Brush.radialGradient(
         colors = listOf(
-            primary.copy(alpha = 0.98f),
-            primary.copy(alpha = 0.70f),
+            primary.copy(alpha = 0.95f),
+            primary.copy(alpha = 0.72f),
             primary.copy(alpha = 0.92f)
         )
     )
 
-    // Soft halo: controlled, premium
-    val halo = Brush.radialGradient(
-        colors = listOf(
-            primary.copy(alpha = 0.20f),
-            Color.Transparent
-        )
-    )
+    // Badge (frosted glass)
+    val badgeBg = Color.White.copy(alpha = 0.14f)
+    val badgeBorder = Color.White.copy(alpha = 0.20f)
 
-    // Badge: frosted glass
-    val badgeBg = Color.White.copy(alpha = 0.16f)
-    val badgeBorder = Color.White.copy(alpha = 0.22f)
-
-    // Icon: BLACK bot
+    // Bot icon tint (dark, premium)
     val botTint = Color.Black.copy(alpha = 0.92f)
 
     Surface(
         modifier = modifier
             .size(outer)
             .scale(scale)
-            .premiumGlow(primary, 0.40f),
+            // ✅ Pure circle glow: no shadow rasterization -> no hex artifact
+            .drawBehind {
+                drawCircle(color = primary.copy(alpha = 0.22f), radius = size.minDimension * 0.62f)
+                drawCircle(color = primary.copy(alpha = 0.10f), radius = size.minDimension * 0.78f)
+            },
         shape = CircleShape,
         color = ringBg,
         border = BorderStroke(1.dp, ringStroke),
-        shadowElevation = 10.dp
+        shadowElevation = 0.dp // ✅ remove shadow (main cause of hex artifacts)
     ) {
         Box(
             modifier = Modifier
@@ -96,20 +93,12 @@ fun BotFab(
                 ) { onClick() },
             contentAlignment = Alignment.Center
         ) {
-            // Single halo layer (behind everything)
-            Box(
-                modifier = Modifier
-                    .size(outer)
-                    .background(halo)
-            )
-
-            // Inner core shell (ring + gradient)
+            // Inner core
             Surface(
                 modifier = Modifier.size(inner),
                 shape = CircleShape,
                 color = Color.Transparent,
                 border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
-                tonalElevation = 0.dp,
                 shadowElevation = 0.dp
             ) {
                 Box(
@@ -118,29 +107,39 @@ fun BotFab(
                         .background(coreGradient),
                     contentAlignment = Alignment.Center
                 ) {
-                    // Badge (frosted glass)
+                    // Frost badge
                     Surface(
                         shape = CircleShape,
                         color = badgeBg,
                         border = BorderStroke(1.dp, badgeBorder),
-                        tonalElevation = 0.dp,
                         shadowElevation = 0.dp
                     ) {
                         Box(
                             modifier = Modifier.size(badge),
                             contentAlignment = Alignment.Center
                         ) {
+                            // ✅ Better-looking icon style (Rounded)
                             Icon(
-                                imageVector = Icons.Filled.SmartToy,
+                                imageVector = Icons.Rounded.SmartToy,
                                 contentDescription = "AI",
                                 tint = botTint
+                            )
+
+                            // ✅ Tiny sparkle overlay for “premium”
+                            Icon(
+                                imageVector = Icons.Rounded.AutoAwesome,
+                                contentDescription = null,
+                                tint = Color.White.copy(alpha = 0.55f),
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .size(14.dp)
                             )
                         }
                     }
                 }
             }
 
-            // Premium specular highlight (correct center in px, not 0..1)
+            // Specular highlight (subtle + clipped correctly)
             BoxWithConstraints(
                 modifier = Modifier
                     .size(inner)
@@ -150,8 +149,7 @@ fun BotFab(
                 val wPx = with(density) { maxWidth.toPx() }
                 val hPx = with(density) { maxHeight.toPx() }
 
-                // highlight near top-left
-                val center = Offset(wPx * 0.35f, hPx * 0.25f)
+                val center = Offset(wPx * 0.34f, hPx * 0.22f)
 
                 Box(
                     modifier = Modifier
@@ -159,17 +157,17 @@ fun BotFab(
                         .background(
                             Brush.radialGradient(
                                 colors = listOf(
-                                    Color.White.copy(alpha = if (pressed) 0.10f else 0.16f),
+                                    Color.White.copy(alpha = if (pressed) 0.08f else 0.12f),
                                     Color.Transparent
                                 ),
                                 center = center,
-                                radius = (wPx.coerceAtLeast(hPx)) * 0.9f
+                                radius = (wPx.coerceAtLeast(hPx)) * 0.85f
                             )
                         )
                 )
             }
 
-            // Thin inner rim (adds “hardware” edge)
+            // Thin inner rim for “hardware edge”
             Box(
                 modifier = Modifier
                     .size(inner)
@@ -178,7 +176,7 @@ fun BotFab(
                         Brush.radialGradient(
                             colors = listOf(
                                 Color.Transparent,
-                                Color.Black.copy(alpha = 0.16f)
+                                Color.Black.copy(alpha = 0.14f)
                             )
                         )
                     )
