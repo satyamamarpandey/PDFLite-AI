@@ -39,6 +39,11 @@ class SettingsRepository(private val context: Context) {
     // ✅ Identity + onboarding
     private val KEY_USER_ID = stringPreferencesKey("user_id")
     private val KEY_ONBOARDING_DONE = booleanPreferencesKey("onboarding_done")
+    private val KEY_IDENTITY_KEY = stringPreferencesKey("identity_key")
+
+    suspend fun setIdentityKey(v: String) {
+        context.dataStore.edit { it[KEY_IDENTITY_KEY] = v.trim() }
+    }
 
     // ✅ Mandatory telemetry flags (always true; no UI)
     private val KEY_CONSENT_ANALYTICS = booleanPreferencesKey("consent_analytics")
@@ -105,9 +110,11 @@ class SettingsRepository(private val context: Context) {
             emailGoogle = prefs[KEY_EMAIL_GOOGLE] ?: "",
             emailManual = prefs[KEY_EMAIL_MANUAL] ?: "",
             emailVerified = prefs[KEY_EMAIL_VERIFIED] ?: false,
+            identityKey = prefs[KEY_IDENTITY_KEY] ?: "",
             gender = prefs[KEY_GENDER] ?: "",
             city = prefs[KEY_CITY] ?: "",
             state = prefs[KEY_STATE] ?: ""
+
         )
     }
 
@@ -151,12 +158,42 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { it[KEY_ONBOARDING_DONE] = done }
     }
 
-    suspend fun setGoogleProfile(name: String, email: String) {
+    private fun normGender(g: String?): String {
+        val v = g?.trim().orEmpty()
+        return if (v.equals("Prefer not to say", ignoreCase = true)) "" else v
+    }
+
+    private fun normOpt(s: String?): String = s?.trim().orEmpty()
+
+    suspend fun setGoogleProfile(
+        name: String,
+        email: String,
+        gender: String? = null,
+        city: String? = null,
+        state: String? = null
+    ) {
+        // ✅ Read existing so we don't overwrite on "Skip"
+        val existing = getUserProfileOnce()
+
+        val newGender = normGender(gender)
+        val newCity = normOpt(city)
+        val newState = normOpt(state)
+
+        val gFinal = if (newGender.isBlank()) existing.gender else newGender
+        val cFinal = if (newCity.isBlank()) existing.city else newCity
+        val sFinal = if (newState.isBlank()) existing.state else newState
+
         context.dataStore.edit {
             it[KEY_AUTH_METHOD] = "google"
             it[KEY_NAME] = name.trim()
             it[KEY_EMAIL_GOOGLE] = email.trim()
+            it[KEY_EMAIL_MANUAL] = ""          // ✅ clear other mode
             it[KEY_EMAIL_VERIFIED] = true
+            it[KEY_IDENTITY_KEY] = email.trim().lowercase()
+
+            it[KEY_GENDER] = gFinal
+            it[KEY_CITY] = cFinal
+            it[KEY_STATE] = sFinal
         }
     }
 
@@ -171,7 +208,9 @@ class SettingsRepository(private val context: Context) {
             it[KEY_AUTH_METHOD] = "manual"
             it[KEY_NAME] = name.trim()
             it[KEY_EMAIL_MANUAL] = email.trim()
+            it[KEY_EMAIL_GOOGLE] = ""          // ✅ clear other mode
             it[KEY_EMAIL_VERIFIED] = false
+            it[KEY_IDENTITY_KEY] = email.trim().lowercase()
             it[KEY_GENDER] = gender.trim()
             it[KEY_CITY] = city.trim()
             it[KEY_STATE] = state.trim()
@@ -191,6 +230,13 @@ class SettingsRepository(private val context: Context) {
             prefs[KEY_PROVIDER] = p.name
             prefs[KEY_MODEL] = defaultModel(p)
         }
+    }
+
+    suspend fun setUserId(newUserId: String) {
+        val u = newUserId.trim()
+        if (u.isBlank()) return
+        context.dataStore.edit { it[KEY_USER_ID] = u }
+        android.util.Log.d("Telemetry", "Persisted canonical user_id=$u")
     }
 
     suspend fun setModel(m: String) { context.dataStore.edit { it[KEY_MODEL] = m.trim() } }

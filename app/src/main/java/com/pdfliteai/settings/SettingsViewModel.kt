@@ -8,16 +8,16 @@ import com.pdfliteai.storage.SecureKeyStore
 import com.pdfliteai.telemetry.TelemetryManager
 import com.pdfliteai.telemetry.TelemetryPrefs
 import com.pdfliteai.telemetry.UserProfile
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     private val repo = SettingsRepository(app)
-
-    // Keep keystore ONLY for Local OpenAI Compat (optional)
     private val keyStore = SecureKeyStore(app)
 
     val aiSettings: StateFlow<AiSettings> =
@@ -29,7 +29,6 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     val recentDocs: StateFlow<List<String>> =
         repo.recentDocsFlow.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    // ✅ New
     val telemetryPrefs: StateFlow<TelemetryPrefs> =
         repo.telemetryPrefsFlow.stateIn(viewModelScope, SharingStarted.Eagerly, TelemetryPrefs())
 
@@ -40,23 +39,17 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         repo.userProfileFlow.stateIn(viewModelScope, SharingStarted.Eagerly, UserProfile())
 
     init {
-        viewModelScope.launch { repo.ensureInitialized() }
+        // ✅ Avoid main-thread disk work
+        viewModelScope.launch(Dispatchers.IO) { repo.ensureInitialized() }
     }
 
     private fun keyName(p: ProviderId) = when (p) {
         ProviderId.LOCAL_OPENAI_COMPAT -> "key_local_compat"
-        ProviderId.GROQ -> "key_groq"             // not used anymore
-        ProviderId.OPENROUTER -> "key_openrouter" // not used anymore
-        ProviderId.NOVA -> "key_nova"             // not used anymore
+        ProviderId.GROQ -> "key_groq"
+        ProviderId.OPENROUTER -> "key_openrouter"
+        ProviderId.NOVA -> "key_nova"
     }
 
-    /**
-     * ✅ Cloudflare mode:
-     * - Nova/OpenRouter keys are NOT stored on-device.
-     * - Worker holds provider keys.
-     *
-     * Local OpenAI Compat can still use a user-provided key (stored securely).
-     */
     fun getApiKey(provider: ProviderId): String {
         return when (provider) {
             ProviderId.LOCAL_OPENAI_COMPAT -> keyStore.get(keyName(provider)).trim()
@@ -74,13 +67,11 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         keyStore.clear(keyName(provider))
     }
 
-    // ---- AI settings ----
     fun setProvider(p: ProviderId) = viewModelScope.launch { repo.setProvider(p) }
     fun setModel(m: String) = viewModelScope.launch { repo.setModel(m) }
     fun setBaseUrl(url: String) = viewModelScope.launch { repo.setBaseUrl(url) }
     fun setTemperature(t: Float) = viewModelScope.launch { repo.setTemperature(t) }
 
-    // ---- Reader settings ----
     fun setKeepScreenOn(on: Boolean) = viewModelScope.launch { repo.setKeepScreenOn(on) }
     fun setRecentsLimit(limit: Int) = viewModelScope.launch { repo.setRecentsLimit(limit) }
     fun addRecent(uri: String) = viewModelScope.launch { repo.addRecent(uri) }
@@ -91,10 +82,17 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     fun setBgDim(v: Float) = viewModelScope.launch { repo.setBgDim(v) }
     fun setChatHistoryLimit(v: Int) = viewModelScope.launch { repo.setChatHistoryLimit(v) }
 
-    // ---- Onboarding completion (MANDATORY telemetry, no toggles) ----
-    fun completeOnboardingGoogle(name: String, email: String) = viewModelScope.launch {
-        repo.setGoogleProfile(name, email)
-        repo.setOnboardingDone(true)
+    fun completeOnboardingGoogle(
+        name: String,
+        email: String,
+        gender: String? = null,
+        city: String? = null,
+        state: String? = null
+    ) = viewModelScope.launch {
+        withContext(Dispatchers.IO) {
+            repo.setGoogleProfile(name, email, gender, city, state)
+            repo.setOnboardingDone(true)
+        }
         TelemetryManager.syncProfileNow()
     }
 
@@ -105,8 +103,10 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         city: String,
         state: String
     ) = viewModelScope.launch {
-        repo.setManualProfile(name, email, gender, city, state)
-        repo.setOnboardingDone(true)
+        withContext(Dispatchers.IO) {
+            repo.setManualProfile(name, email, gender, city, state)
+            repo.setOnboardingDone(true)
+        }
         TelemetryManager.syncProfileNow()
     }
 }

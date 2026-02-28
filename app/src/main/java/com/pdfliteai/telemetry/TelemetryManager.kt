@@ -1,3 +1,4 @@
+// TelemetryManager.kt
 package com.pdfliteai.telemetry
 
 import android.annotation.SuppressLint
@@ -10,7 +11,6 @@ import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.util.TimeZone
 import java.util.concurrent.atomic.AtomicBoolean
-import org.json.JSONArray
 
 object TelemetryManager {
 
@@ -36,13 +36,19 @@ object TelemetryManager {
     private var userIdProvider: (suspend () -> String) = { "" }
     private var profileProvider: (suspend () -> UserProfile) = { UserProfile() }
 
+    // Optional setters (used to persist canonical IDs returned by Worker)
+    private var userIdSetter: (suspend (String) -> Unit)? = null
+    private var identityKeySetter: (suspend (String) -> Unit)? = null
+
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     fun init(
         context: Context,
         config: TelemetryConfig,
         userIdProvider: suspend () -> String,
-        profileProvider: suspend () -> UserProfile
+        profileProvider: suspend () -> UserProfile,
+        userIdSetter: (suspend (String) -> Unit)? = null,
+        identityKeySetter: (suspend (String) -> Unit)? = null
     ) {
         if (started.getAndSet(true)) return
 
@@ -53,6 +59,8 @@ object TelemetryManager {
 
         this.userIdProvider = userIdProvider
         this.profileProvider = profileProvider
+        this.userIdSetter = userIdSetter
+        this.identityKeySetter = identityKeySetter
 
         Log.d(
             TAG,
@@ -84,7 +92,6 @@ object TelemetryManager {
             val profile = runCatching { profileProvider() }.getOrDefault(UserProfile())
             if (profile.userId.isBlank()) return@launch
 
-            // ✅ Worker expects snake_case keys
             val tzOffsetMin = TimeZone.getDefault().rawOffset / 60000
             val locale = runCatching {
                 appContext.resources.configuration.locales[0].toLanguageTag()
@@ -96,27 +103,31 @@ object TelemetryManager {
 
             val o = JSONObject()
 
-            // ✅ REQUIRED by Worker
+            // REQUIRED by Worker
             o.put("user_id", profile.userId)
 
-            // ✅ Only include fields that exist in YOUR UserProfile model
+            // Core profile
             putOpt(o, "auth_method", profile.authMethod)
             putOpt(o, "name", profile.name)
             putOpt(o, "gender", profile.gender)
             putOpt(o, "city", profile.city)
             putOpt(o, "state", profile.state)
 
+            // Emails + identity
             putOpt(o, "email_google", profile.emailGoogle)
             putOpt(o, "email_manual", profile.emailManual)
+            putOpt(o, "identity_key", profile.identityKey)
+
             o.put("email_verified", profile.emailVerified)
 
+            // Locale/tz/app version
             if (locale.isBlank()) o.put("locale", JSONObject.NULL) else o.put("locale", locale)
             o.put("tz_offset_min", tzOffsetMin)
             putOpt(o, "app_version", cfg.appVersion)
 
             Log.d(
                 TAG,
-                "syncProfileNow -> userId=${profile.userId} auth_method=${profile.authMethod} email_manual=${profile.emailManual} email_google=${profile.emailGoogle}"
+                "syncProfileNow -> userId=${profile.userId} auth_method=${profile.authMethod} identity_key=${profile.identityKey} email_manual=${profile.emailManual} email_google=${profile.emailGoogle}"
             )
 
             val (code, resp) = runCatching {
@@ -124,6 +135,27 @@ object TelemetryManager {
             }.getOrElse {
                 Log.d(TAG, "syncProfileNow <- failed: ${it.message ?: it::class.java.simpleName}")
                 return@launch
+            }
+
+            // Persist canonical ids returned by Worker (optional)
+            if (code in 200..299 && resp.isNotBlank()) {
+                runCatching {
+                    val json = JSONObject(resp)
+
+                    val canonicalId = json.optString("user_id", "").trim()
+                    if (canonicalId.isNotBlank() && canonicalId != profile.userId) {
+                        Log.d(TAG, "syncProfileNow -> canonical user_id=$canonicalId (was ${profile.userId})")
+                        userIdSetter?.invoke(canonicalId)
+                    }
+
+                    val canonicalIdentity = json.optString("identity_key", "").trim()
+                    if (canonicalIdentity.isNotBlank() && canonicalIdentity != profile.identityKey) {
+                        Log.d(TAG, "syncProfileNow -> canonical identity_key=$canonicalIdentity")
+                        identityKeySetter?.invoke(canonicalIdentity)
+                    }
+                }.onFailure {
+                    // Ignore parse issues (worker may return non-json or empty body)
+                }
             }
 
             Log.d(TAG, "syncProfileNow <- code=$code resp=$resp")

@@ -6,6 +6,9 @@ import kotlinx.serialization.Serializable
 data class UserProfile(
     val userId: String = "",
 
+    // ✅ NEW (stable identity across reinstalls)
+    val identityKey: String = "",
+
     // "google" | "manual"
     val authMethod: String = "",
 

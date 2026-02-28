@@ -37,8 +37,7 @@ android {
         buildConfigField("String", "TELEMETRY_BASE_URL", "\"$telemetryBaseUrl\"")
         buildConfigField("String", "APP_TOKEN", "\"$appToken\"")
 
-        // ✅ Default ABI set (applies unless overridden per buildType below)
-        // Keep it broad enough for real devices.
+        // ABI filters (your existing setup)
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
         }
@@ -50,8 +49,6 @@ android {
             isShrinkResources = false
             isDebuggable = true
 
-            // ✅ Allow emulator (x86_64) for debug/dev only.
-            // (This is usually where the 16KB warning shows up.)
             ndk {
                 abiFilters.clear()
                 abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
@@ -63,7 +60,6 @@ android {
             isShrinkResources = true
             isDebuggable = false
 
-            // ✅ Release: ship only ARM to avoid x86_64 native libs that are often 16KB-misaligned.
             ndk {
                 abiFilters.clear()
                 abiFilters += listOf("arm64-v8a", "armeabi-v7a")
@@ -137,5 +133,13 @@ dependencies {
         exclude(group = "com.android.support")
     }
 
-    implementation("com.google.android.gms:play-services-auth:21.2.0")
+    // ✅ Update (fixes known issues; current as of Feb 18, 2026)
+    implementation("com.google.android.gms:play-services-auth:21.5.1")
+
+    // ✅ Recommended modern Google sign-in stack (Credential Manager + GoogleID)
+    implementation("androidx.credentials:credentials:1.5.0")
+    implementation("com.google.android.libraries.identity.googleid:googleid:1.2.0")
+
+    // ✅ Optional but recommended for best support on Android 13 and below
+    implementation("androidx.credentials:credentials-play-services-auth:1.5.0")
 }

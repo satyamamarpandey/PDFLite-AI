@@ -63,6 +63,7 @@ fun OnboardingScreen(
 
     var mode by remember { mutableStateOf(OnboardMode.CHOICE) }
 
+    // Manual fields
     var name by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
@@ -72,11 +73,24 @@ fun OnboardingScreen(
     var state by remember { mutableStateOf("") }
 
     var genderExpanded by remember { mutableStateOf(false) }
+
+    // ✅ Keep "Prefer not to say" option (requested)
     val genders = remember { listOf("Male", "Female", "Non-binary", "Prefer not to say") }
 
     var agreed by remember { mutableStateOf(false) }
     var err by remember { mutableStateOf<String?>(null) }
     var attempted by remember { mutableStateOf(false) }
+
+    // ✅ Google required profile dialog (post sign-in)
+    var showGoogleProfileDialog by remember { mutableStateOf(false) }
+    var pendingGoogleName by remember { mutableStateOf("") }
+    var pendingGoogleEmail by remember { mutableStateOf("") }
+
+    var gGender by remember { mutableStateOf("Prefer not to say") }
+    var gCity by remember { mutableStateOf("") }
+    var gState by remember { mutableStateOf("") }
+    var gGenderExpanded by remember { mutableStateOf(false) }
+    var attemptedGoogleDetails by remember { mutableStateOf(false) }
 
     fun openLegal() {
         runCatching {
@@ -103,25 +117,48 @@ fun OnboardingScreen(
     val googleLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { res: ActivityResult ->
-        val data = res.data ?: return@rememberLauncherForActivityResult
+        val data = res.data
         err = null
-        runCatching {
+
+        if (data == null) {
+            err = "Google sign-in cancelled."
+            return@rememberLauncherForActivityResult
+        }
+
+        try {
             val acct = GoogleSignIn.getSignedInAccountFromIntent(data)
                 .getResult(ApiException::class.java)
-            val gEmail = acct?.email.orEmpty()
-            val gName = acct?.displayName.orEmpty().ifBlank { "User" }
-            if (gEmail.isBlank()) {
+
+            val emailFromGoogle = acct?.email.orEmpty()
+            val nameFromGoogle = acct?.displayName.orEmpty().ifBlank { "User" }
+
+            if (emailFromGoogle.isBlank()) {
                 err = "Google sign-in failed: email not available."
                 return@rememberLauncherForActivityResult
             }
-            vm.completeOnboardingGoogle(gName, gEmail)
-            onDone()
-        }.onFailure {
+
+            // ✅ Don't complete onboarding yet
+            pendingGoogleName = nameFromGoogle
+            pendingGoogleEmail = emailFromGoogle
+
+            // reset dialog inputs
+            attemptedGoogleDetails = false
+            gGender = "Prefer not to say"
+            gCity = ""
+            gState = ""
+            gGenderExpanded = false
+
+            showGoogleProfileDialog = true
+        } catch (e: ApiException) {
+            android.util.Log.e("GoogleSignIn", "FAILED statusCode=${e.statusCode} msg=${e.message}", e)
+            err = "Google sign-in failed (code ${e.statusCode})."
+        } catch (t: Throwable) {
+            android.util.Log.e("GoogleSignIn", "FAILED unknown", t)
             err = "Google sign-in failed."
         }
     }
 
-    // ---- Validation ----
+    // ---- Validation (manual) ----
     val nameOk = name.trim().isNotBlank()
     val emailOk = Patterns.EMAIL_ADDRESS.matcher(email.trim()).matches()
     val passOk = password.trim().length >= 8
@@ -180,7 +217,6 @@ fun OnboardingScreen(
         cursorColor = MaterialTheme.colorScheme.primary
     )
 
-    // Terms line (clickable)
     val termsLine = remember {
         buildAnnotatedString {
             append("I agree to ")
@@ -199,7 +235,6 @@ fun OnboardingScreen(
         }
     }
 
-    // Layout sizing
     val screenH = cfg.screenHeightDp.dp
     val cardMaxH = (screenH - 260.dp).coerceAtLeast(340.dp)
 
@@ -213,7 +248,119 @@ fun OnboardingScreen(
         Box(Modifier.fillMaxSize().background(verticalScrim))
         Box(Modifier.fillMaxSize().background(vignette))
 
-        // ✅ Bottom pinned Terms (full width, centered)
+        // ✅ Mandatory Google details dialog (no skip, no outside dismiss)
+        if (showGoogleProfileDialog) {
+            val gGenderOk = gGender.trim().isNotBlank() // allow "Prefer not to say"
+            val gCityOk = gCity.trim().isNotBlank()
+            val gStateOk = gState.trim().isNotBlank()
+            val canContinue = gGenderOk && gCityOk && gStateOk
+
+            AlertDialog(
+                onDismissRequest = { /* ✅ mandatory: do nothing */ },
+                title = { Text("One last step") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(
+                            "We need a few details to finish setup.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color.White.copy(alpha = 0.82f)
+                        )
+
+                        ExposedDropdownMenuBox(
+                            expanded = gGenderExpanded,
+                            onExpandedChange = { gGenderExpanded = !gGenderExpanded }
+                        ) {
+                            OutlinedTextField(
+                                value = gGender,
+                                onValueChange = { },
+                                readOnly = true,
+                                label = { Text("Gender") },
+                                modifier = Modifier
+                                    .menuAnchor()
+                                    .fillMaxWidth(),
+                                colors = tfColors,
+                                singleLine = true,
+                                isError = attemptedGoogleDetails && !gGenderOk,
+                                supportingText = {
+                                    if (attemptedGoogleDetails && !gGenderOk) Text("Required")
+                                }
+                            )
+                            ExposedDropdownMenu(
+                                expanded = gGenderExpanded,
+                                onDismissRequest = { gGenderExpanded = false }
+                            ) {
+                                genders.forEach { opt ->
+                                    DropdownMenuItem(
+                                        text = { Text(opt) },
+                                        onClick = {
+                                            gGender = opt
+                                            gGenderExpanded = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            OutlinedTextField(
+                                value = gCity,
+                                onValueChange = { gCity = it },
+                                label = { Text("City") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f),
+                                colors = tfColors,
+                                isError = attemptedGoogleDetails && !gCityOk,
+                                supportingText = { if (attemptedGoogleDetails && !gCityOk) Text("Required") }
+                            )
+                            OutlinedTextField(
+                                value = gState,
+                                onValueChange = { gState = it },
+                                label = { Text("State") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f),
+                                colors = tfColors,
+                                isError = attemptedGoogleDetails && !gStateOk,
+                                supportingText = { if (attemptedGoogleDetails && !gStateOk) Text("Required") }
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            attemptedGoogleDetails = true
+                            if (!canContinue) return@Button
+
+                            vm.completeOnboardingGoogle(
+                                name = pendingGoogleName,
+                                email = pendingGoogleEmail,
+                                // ✅ keep "Prefer not to say" (it will store "" via SettingsRepository.normGender)
+                                gender = gGender,
+                                city = gCity.trim(),
+                                state = gState.trim()
+                            )
+                            showGoogleProfileDialog = false
+                            onDone()
+                        },
+                        enabled = canContinue,
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.height(44.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.92f),
+                            contentColor = Color.Black,
+                            disabledContainerColor = Color.White.copy(alpha = 0.10f),
+                            disabledContentColor = Color.White.copy(alpha = 0.45f)
+                        )
+                    ) {
+                        Text("Continue", fontWeight = FontWeight.SemiBold)
+                    }
+                },
+                containerColor = Color.Black.copy(alpha = 0.90f),
+                tonalElevation = 0.dp
+            )
+        }
+
+        // ✅ Bottom pinned Terms
         Surface(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -245,7 +392,7 @@ fun OnboardingScreen(
             }
         }
 
-        // ✅ Center content (options in middle)
+        // ✅ Center content
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -260,7 +407,6 @@ fun OnboardingScreen(
                 verticalArrangement = Arrangement.spacedBy(14.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // ✅ Icon: use image directly, rounded corners only (no fit/padding box)
                 Image(
                     painter = painterResource(id = com.pdfliteai.R.drawable.pdfliteaiicon_playstore),
                     contentDescription = "App icon",
@@ -308,7 +454,6 @@ fun OnboardingScreen(
                             .verticalScroll(innerScroll),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-
                         AnimatedContent(
                             targetState = mode,
                             transitionSpec = {
@@ -337,7 +482,9 @@ fun OnboardingScreen(
                                             onClick = {
                                                 err = null
                                                 if (!requireTermsOrError()) return@Button
-                                                googleLauncher.launch(gClient.signInIntent)
+                                                gClient.signOut().addOnCompleteListener {
+                                                    googleLauncher.launch(gClient.signInIntent)
+                                                }
                                             },
                                             modifier = Modifier
                                                 .fillMaxWidth()
@@ -397,9 +544,7 @@ fun OnboardingScreen(
                                             modifier = Modifier.fillMaxWidth(),
                                             colors = tfColors,
                                             isError = attempted && !nameOk,
-                                            supportingText = {
-                                                if (attempted && !nameOk) Text("Name is required.")
-                                            }
+                                            supportingText = { if (attempted && !nameOk) Text("Name is required.") }
                                         )
 
                                         OutlinedTextField(
@@ -410,9 +555,7 @@ fun OnboardingScreen(
                                             modifier = Modifier.fillMaxWidth(),
                                             colors = tfColors,
                                             isError = attempted && !emailOk,
-                                            supportingText = {
-                                                if (attempted && !emailOk) Text("Enter a valid email.")
-                                            }
+                                            supportingText = { if (attempted && !emailOk) Text("Enter a valid email.") }
                                         )
 
                                         OutlinedTextField(
@@ -433,9 +576,7 @@ fun OnboardingScreen(
                                                 }
                                             },
                                             isError = attempted && !passOk,
-                                            supportingText = {
-                                                if (attempted && !passOk) Text("Min 8 characters required.")
-                                            }
+                                            supportingText = { if (attempted && !passOk) Text("Min 8 characters required.") }
                                         )
 
                                         ExposedDropdownMenuBox(
@@ -447,14 +588,10 @@ fun OnboardingScreen(
                                                 onValueChange = { },
                                                 readOnly = true,
                                                 label = { Text("Gender") },
-                                                modifier = Modifier
-                                                    .menuAnchor()
-                                                    .fillMaxWidth(),
+                                                modifier = Modifier.menuAnchor().fillMaxWidth(),
                                                 colors = tfColors,
                                                 isError = attempted && !genderOk,
-                                                supportingText = {
-                                                    if (attempted && !genderOk) Text("Gender is required.")
-                                                }
+                                                supportingText = { if (attempted && !genderOk) Text("Gender is required.") }
                                             )
                                             ExposedDropdownMenu(
                                                 expanded = genderExpanded,
