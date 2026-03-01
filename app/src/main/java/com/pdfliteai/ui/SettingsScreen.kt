@@ -70,6 +70,39 @@ fun SettingsScreen(
         )
     )
 
+    val prem by vm.premiumState.collectAsState()
+    val isPremium = prem.isPremium
+
+    DarkGlassCard {
+        Text("Premium", style = MaterialTheme.typography.titleMedium, color = Color.White)
+        Spacer(Modifier.height(8.dp))
+
+        Text(
+            if (isPremium) "Status: Active ✅" else "Status: Free",
+            color = Color.White.copy(alpha = 0.85f)
+        )
+
+        Spacer(Modifier.height(10.dp))
+
+        val activity = (LocalContext.current as? android.app.Activity)
+
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Button(
+                onClick = { activity?.let { vm.buyMonthly(it) } },
+                enabled = activity != null
+            ) { Text("Monthly $2.99") }
+
+            Button(
+                onClick = { activity?.let { vm.buyAnnual(it) } },
+                enabled = activity != null
+            ) { Text("Annual $19.99") }
+        }
+
+        Spacer(Modifier.height(8.dp))
+        TextButton(onClick = { vm.restorePremium() }) { Text("Restore purchases", color = Color.White) }
+        TextButton(onClick = { vm.refreshPremium() }) { Text("Refresh status", color = Color.White) }
+    }
+
     Scaffold(
         topBar = { SimpleTopBar(title = "Settings", onBack = onBack) },
         containerColor = Color.Transparent
@@ -116,21 +149,24 @@ fun SettingsScreen(
                     )
 
                     Spacer(Modifier.height(14.dp))
-                    Text(
-                        "AI temperature",
-                        color = Color.White,
-                        style = MaterialTheme.typography.titleSmall
-                    )
-                    Slider(
-                        value = s.temperature,
-                        onValueChange = { vm.setTemperature(it) },
-                        valueRange = 0f..1f
-                    )
-                    Text(
-                        "Lower = more factual. Higher = more creative.",
-                        color = Color.White.copy(alpha = 0.70f),
-                        style = MaterialTheme.typography.bodySmall
-                    )
+                    Text("AI temperature", color = Color.White, style = MaterialTheme.typography.titleSmall)
+                    if (isPremium) {
+                        Slider(
+                            value = s.temperature,
+                            onValueChange = { vm.setTemperature(it) },
+                            valueRange = 0f..1f
+                        )
+                        Text("Lower = more factual. Higher = more creative.",
+                            color = Color.White.copy(alpha = 0.70f),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    } else {
+                        Text(
+                            "Free plan: fixed at ${com.pdfliteai.billing.PremiumGates.FREE_TEMPERATURE}",
+                            color = Color.White.copy(alpha = 0.70f),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
 
                     if (isLocal) {
                         Spacer(Modifier.height(14.dp))
@@ -274,23 +310,25 @@ fun SettingsScreen(
                     Spacer(Modifier.height(10.dp))
 
                     Text(
-                        "Recent File' limit: ${r.recentsLimit}",
+                        "Recent File limit: ${r.recentsLimit}",
                         color = Color.White,
                         style = MaterialTheme.typography.titleSmall
                     )
-                    Slider(
-                        value = r.recentsLimit.toFloat(),
-                        onValueChange = { vm.setRecentsLimit(it.toInt()) },
-                        valueRange = 3f..10f,
-                        steps = 6,
-                        colors = SliderDefaults.colors(
-                            thumbColor = Color.White.copy(alpha = 0.95f),
-                            activeTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.95f),
-                            inactiveTrackColor = Color.White.copy(alpha = 0.20f),
-                            activeTickColor = Color.White.copy(alpha = 0.90f),
-                            inactiveTickColor = Color.White.copy(alpha = 0.35f)
+
+                    if (isPremium) {
+                        Slider(
+                            value = r.recentsLimit.toFloat(),
+                            onValueChange = { vm.setRecentsLimit(it.toInt()) },
+                            valueRange = 3f..50f,
+                            steps = 47
                         )
-                    )
+                    } else {
+                        Text(
+                            "Free plan: fixed at 3 recents",
+                            color = Color.White.copy(alpha = 0.70f),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
 
                     Spacer(Modifier.height(10.dp))
                     Button(

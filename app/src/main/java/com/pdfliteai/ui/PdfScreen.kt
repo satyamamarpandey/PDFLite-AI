@@ -136,6 +136,7 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.math.abs
 import kotlin.math.sqrt
+import com.pdfliteai.billing.PremiumGates
 
 private const val TTS_CHUNK_MAX = 3500
 private const val TAG_PDF_SCREEN = "PdfScreen"
@@ -187,6 +188,8 @@ fun PdfScreen(
     val repoErr by repo.lastError.collectAsState()
 
     val s by vm.aiSettings.collectAsState()
+    val prem by vm.premiumState.collectAsState()
+    val isPremium = prem.isPremium
     val reader by vm.readerSettings.collectAsState()
     val recents by vm.recentDocs.collectAsState()
 
@@ -271,6 +274,19 @@ fun PdfScreen(
                 Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
             }
         }
+    }
+
+    var docChatCount by remember { mutableIntStateOf(0) }
+    LaunchedEffect(repoDocId) {
+        docChatCount = if (repoDocId.isNotBlank()) vm.getDocChatCount(repoDocId) else 0
+    }
+
+    var paywallOpen by remember { mutableStateOf(false) }
+    var paywallReason by remember { mutableStateOf("") }
+
+    fun openPaywall(reason: String) {
+        paywallReason = reason
+        paywallOpen = true
     }
 
     DisposableEffect(Unit) {
@@ -558,7 +574,12 @@ fun PdfScreen(
         )
     }
 
-    suspend fun runAsk(qOverride: String? = null) {
+    suspend fun runAsk(
+        qOverride: String? = null,
+        settingsOverride: com.pdfliteai.settings.AiSettings? = null
+    ) {
+        val activeSettings = settingsOverride ?: s
+
         val full = when (docKind) {
             DocKind.PDF -> {
                 val f = pdfFile ?: throw IllegalStateException("Open a PDF first.")
@@ -573,19 +594,19 @@ fun PdfScreen(
         val q = (qOverride ?: question).trim()
         if (q.isBlank()) throw IllegalStateException("Type a question or use a quick prompt.")
 
-        val key = vm.getApiKey(s.provider).trim()
-        if (s.provider == ProviderId.LOCAL_OPENAI_COMPAT && key.isBlank()) {
+        val key = vm.getApiKey(activeSettings.provider).trim()
+        if (activeSettings.provider == ProviderId.LOCAL_OPENAI_COMPAT && key.isBlank()) {
             throw IllegalStateException("Missing API key for Local provider. Please set it in Settings.")
         }
 
         val prompt = buildAskPromptWithinLimit(
-            provider = s.provider,
+            provider = activeSettings.provider,
             docText = full,
             question = q
         )
 
         addToHistory(ChatRole.User, q)
-        val out = ai.chat(s, key, prompt)
+        val out = ai.chat(activeSettings, key, prompt)
         addToHistory(ChatRole.Assistant, out)
 
         val did = repoDocId.ifBlank {
@@ -596,8 +617,8 @@ fun PdfScreen(
         TelemetryManager.uploadChatJsonNow(
             docId = did,
             chatId = chatSessionId,
-            model = s.model,
-            json = buildChatJson(did, chatSessionId, s.model, history.toList())
+            model = activeSettings.model,
+            json = buildChatJson(did, chatSessionId, activeSettings.model, history.toList())
         )
     }
 
@@ -1127,7 +1148,7 @@ fun PdfScreen(
                                 .padding(horizontal = 14.dp, vertical = 12.dp)
                                 .fillMaxSize(),
                             shape = RoundedCornerShape(18.dp),
-                            color = Color.White.copy(alpha = 0.05f),
+                            color = Color.White.copy(alpha = 0.15f),
                             border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f)),
                             shadowElevation = 8.dp
                         ) {
@@ -1189,7 +1210,12 @@ fun PdfScreen(
                                         )
                                         Spacer(Modifier.padding(top = 8.dp))
 
-                                        val list = recents.take(reader.recentsLimit)
+                                        val recentsCap = if (isPremium) {
+                                            reader.recentsLimit
+                                        } else {
+                                            minOf(reader.recentsLimit, PremiumGates.FREE_RECENTS_LIMIT)
+                                        }
+                                        val list = recents.take(recentsCap)
                                         if (list.isEmpty()) {
                                             Text(
                                                 "No recent files yet.",
@@ -1240,8 +1266,28 @@ fun PdfScreen(
                     cs.launch {
                         busy = true
                         error = null
+
+                        if (!isPremium && repoDocId.isNotBlank() && docChatCount >= com.pdfliteai.billing.PremiumGates.FREE_CHATS_PER_PDF) {
+                            openPaywall("Free plan allows 3 chats per PDF.")
+                            busy = false
+                            return@launch
+                        }
+
+                        if (!isPremium && repoDocId.isNotBlank()) {
+                            docChatCount = vm.incrementDocChatCount(repoDocId)
+                        }
+
                         try {
-                            runAsk(qOverride = prompt)
+                            val effectiveSettings =
+                                if (isPremium) s
+                                else s.copy(
+                                    provider = ProviderId.NOVA,
+                                    model = com.pdfliteai.billing.PremiumGates.MODEL_NOVA_MICRO,
+                                    temperature = com.pdfliteai.billing.PremiumGates.FREE_TEMPERATURE
+                                )
+
+                            // ✅ IMPORTANT: use quick prompt, not typed input
+                            runAsk(qOverride = prompt, settingsOverride = effectiveSettings)
                         } catch (t: Throwable) {
                             val msg = t.message ?: t::class.java.simpleName
                             error = msg
@@ -1258,8 +1304,28 @@ fun PdfScreen(
                     cs.launch {
                         busy = true
                         error = null
+
+                        if (!isPremium && repoDocId.isNotBlank() && docChatCount >= com.pdfliteai.billing.PremiumGates.FREE_CHATS_PER_PDF) {
+                            openPaywall("Free plan allows 3 chats per PDF.")
+                            busy = false
+                            return@launch
+                        }
+
+                        if (!isPremium && repoDocId.isNotBlank()) {
+                            docChatCount = vm.incrementDocChatCount(repoDocId)
+                        }
+
                         try {
-                            runAsk()
+                            val effectiveSettings =
+                                if (isPremium) s
+                                else s.copy(
+                                    provider = ProviderId.NOVA,
+                                    model = com.pdfliteai.billing.PremiumGates.MODEL_NOVA_MICRO,
+                                    temperature = com.pdfliteai.billing.PremiumGates.FREE_TEMPERATURE
+                                )
+
+                            // ✅ IMPORTANT: apply freemium settings BEFORE ask
+                            runAsk(settingsOverride = effectiveSettings)
                             question = ""
                         } catch (t: Throwable) {
                             val msg = t.message ?: t::class.java.simpleName
@@ -1274,12 +1340,18 @@ fun PdfScreen(
 
                 errorText = error ?: repoErr,
                 messages = history.toList(),
-                historyChatsLimit = reader.chatHistoryLimit
+                historyChatsLimit = reader.chatHistoryLimit,
+                isPremium = isPremium,
+                docChatCount = docChatCount,
+                onGoPremium = { openPaywall("Upgrade to unlock Premium.") }
             )
 
             ToolsSheetV2(
                 open = toolsOpen && hasPdfDoc,
                 onClose = { toolsOpen = false },
+
+                isPremium = isPremium,
+                onGoPremium = { openPaywall("Upgrade to unlock Premium tools.") },
 
                 pdfFile = pdfFile,
                 docDisplayName = docDisplayName,
@@ -1299,12 +1371,31 @@ fun PdfScreen(
 
                 onDeletePageNumber = { pageNum1Based -> deletePageAt(pageNum1Based - 1) },
 
-                onMergePdfs = { mergePicker.launch(arrayOf("application/pdf")) },
+                onMergePdfs = onMergePdfs@{
+                    if (!isPremium) {
+                        openPaywall("Merge PDFs is Premium.")
+                        return@onMergePdfs
+                    }
+                    mergePicker.launch(arrayOf("application/pdf"))
+                },
 
-                onCompress = { compressPdf() },
+                onCompress = onCompress@{
+                    if (!isPremium) {
+                        openPaywall("Compress PDF is Premium.")
+                        return@onCompress File("")
+                    }
+                    compressPdf()
+                },
+
+                onSecurePdfOwnerOnly = onSecurePdfOwnerOnly@{ owner ->
+                    if (!isPremium) {
+                        openPaywall("Secure PDF is Premium.")
+                        return@onSecurePdfOwnerOnly File("")
+                    }
+                    securePdf(owner)
+                },
+
                 onApplyWatermark = { wm -> applyWatermark(wm) },
-
-                onSecurePdfOwnerOnly = { owner -> securePdf(owner) },
 
                 onGoToPage1Based = { page1 ->
                     val targetIdx0 = (page1 - 1).coerceAtLeast(0)
@@ -1416,7 +1507,14 @@ private fun AcrobatPdfViewer(
                             runCatching { onZoomChanged(pdfView.zoom) }
                             true
                         }
+                        .onError { t ->
+                            Log.e(TAG_PDF_SCREEN, "PDF load error: ${t.message}", t)
+                        }
+                        .onPageError { page, t ->
+                            Log.e(TAG_PDF_SCREEN, "PDF page error page=$page : ${t.message}", t)
+                        }
                         .onLoad { total ->
+                            Log.d(TAG_PDF_SCREEN, "PDF onLoad totalPages=$total current=${pdfView.currentPage}")
                             onPageChanged(pdfView.currentPage, total)
                             runCatching { onZoomChanged(pdfView.zoom) }
                         }

@@ -3,8 +3,15 @@ package com.pdfliteai.settings
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
-import androidx.datastore.preferences.core.*
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.pdfliteai.billing.PremiumGates
+import com.pdfliteai.billing.PremiumState
 import com.pdfliteai.data.ProviderId
 import com.pdfliteai.telemetry.TelemetryPrefs
 import com.pdfliteai.telemetry.UserProfile
@@ -33,10 +40,19 @@ class SettingsRepository(private val context: Context) {
     private val KEY_CHAT_HISTORY_LIMIT = intPreferencesKey("chat_history_limit")
     private val KEY_RECENTS_MIGRATED_V1 = booleanPreferencesKey("recents_migrated_v1")
 
+    // Premium cache
+    private val KEY_PREMIUM = booleanPreferencesKey("premium_is_premium")
+    private val KEY_PREMIUM_PRODUCT = stringPreferencesKey("premium_active_product")
+    private val KEY_PREMIUM_LASTCHECK = longPreferencesKey("premium_last_checked_at")
+    private val KEY_PREMIUM_ERROR = stringPreferencesKey("premium_error")
+
+    // per-document chat counts (docId -> count)
+    private val KEY_DOC_CHAT_COUNTS = stringPreferencesKey("doc_chat_counts_v1")
+
     private val RECENT_SEP = "||"
     private fun recentUri(entry: String): String = entry.substringBefore(RECENT_SEP).trim()
 
-    // ✅ Identity + onboarding
+    // Identity + onboarding
     private val KEY_USER_ID = stringPreferencesKey("user_id")
     private val KEY_ONBOARDING_DONE = booleanPreferencesKey("onboarding_done")
     private val KEY_IDENTITY_KEY = stringPreferencesKey("identity_key")
@@ -45,11 +61,11 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { it[KEY_IDENTITY_KEY] = v.trim() }
     }
 
-    // ✅ Mandatory telemetry flags (always true; no UI)
+    // Mandatory telemetry flags (always true; no UI)
     private val KEY_CONSENT_ANALYTICS = booleanPreferencesKey("consent_analytics")
     private val KEY_CONSENT_CONTENT = booleanPreferencesKey("consent_content")
 
-    // ✅ Profile fields
+    // Profile fields
     private val KEY_AUTH_METHOD = stringPreferencesKey("auth_method") // google|manual
     private val KEY_NAME = stringPreferencesKey("profile_name")
 
@@ -60,6 +76,17 @@ class SettingsRepository(private val context: Context) {
     private val KEY_GENDER = stringPreferencesKey("gender")
     private val KEY_CITY = stringPreferencesKey("city")
     private val KEY_STATE = stringPreferencesKey("state")
+
+    // ---------- FLOWS ----------
+
+    val premiumStateFlow: Flow<PremiumState> = context.dataStore.data.map { prefs ->
+        PremiumState(
+            isPremium = prefs[KEY_PREMIUM] ?: false,
+            activeProductId = prefs[KEY_PREMIUM_PRODUCT]?.ifBlank { null },
+            lastCheckedAt = prefs[KEY_PREMIUM_LASTCHECK] ?: 0L,
+            error = prefs[KEY_PREMIUM_ERROR]?.ifBlank { null }
+        )
+    }
 
     val aiSettingsFlow: Flow<AiSettings> = context.dataStore.data.map { prefs ->
         val provider = runCatching {
@@ -77,7 +104,7 @@ class SettingsRepository(private val context: Context) {
     val readerSettingsFlow: Flow<ReaderSettings> = context.dataStore.data.map { prefs ->
         ReaderSettings(
             keepScreenOn = prefs[KEY_KEEP_SCREEN_ON] ?: false,
-            recentsLimit = (prefs[KEY_RECENTS_LIMIT] ?: 10).coerceIn(3, 10),
+            recentsLimit = (prefs[KEY_RECENTS_LIMIT] ?: 10).coerceIn(3, PremiumGates.PREMIUM_RECENTS_LIMIT),
             autoOpenAi = prefs[KEY_AUTO_OPEN_AI] ?: true,
             defaultEntireDoc = prefs[KEY_DEFAULT_ENTIRE_DOC] ?: true,
             bgDim = (prefs[KEY_BG_DIM] ?: 0.22f).coerceIn(0f, 0.45f),
@@ -86,11 +113,10 @@ class SettingsRepository(private val context: Context) {
     }
 
     val recentDocsFlow: Flow<List<String>> = context.dataStore.data.map { prefs ->
-        val limit = (prefs[KEY_RECENTS_LIMIT] ?: 10).coerceIn(3, 10)
+        val limit = (prefs[KEY_RECENTS_LIMIT] ?: 10).coerceIn(3, PremiumGates.PREMIUM_RECENTS_LIMIT)
         decodeList(prefs[KEY_RECENTS].orEmpty()).take(limit)
     }
 
-    // ✅ New flows
     val onboardingDoneFlow: Flow<Boolean> =
         context.dataStore.data.map { it[KEY_ONBOARDING_DONE] ?: false }
 
@@ -114,9 +140,10 @@ class SettingsRepository(private val context: Context) {
             gender = prefs[KEY_GENDER] ?: "",
             city = prefs[KEY_CITY] ?: "",
             state = prefs[KEY_STATE] ?: ""
-
         )
     }
+
+    // ---------- INIT / MIGRATIONS ----------
 
     suspend fun ensureInitialized() {
         val prefs = context.dataStore.data.first()
@@ -127,6 +154,7 @@ class SettingsRepository(private val context: Context) {
                 p[KEY_MODEL] = defaultModel(ProviderId.NOVA)
                 p[KEY_TEMP] = 0.2f
             }
+
             if (!prefs.contains(KEY_RECENTS_LIMIT)) p[KEY_RECENTS_LIMIT] = 10
             if (!prefs.contains(KEY_KEEP_SCREEN_ON)) p[KEY_KEEP_SCREEN_ON] = false
             if (!prefs.contains(KEY_AUTO_OPEN_AI)) p[KEY_AUTO_OPEN_AI] = true
@@ -135,11 +163,14 @@ class SettingsRepository(private val context: Context) {
             if (!prefs.contains(KEY_CHAT_HISTORY_LIMIT)) p[KEY_CHAT_HISTORY_LIMIT] = 3
             if (!prefs.contains(KEY_RECENTS_MIGRATED_V1)) p[KEY_RECENTS_MIGRATED_V1] = false
 
-            // ✅ one-time userId
             if (!prefs.contains(KEY_USER_ID)) p[KEY_USER_ID] = UUID.randomUUID().toString()
             if (!prefs.contains(KEY_ONBOARDING_DONE)) p[KEY_ONBOARDING_DONE] = false
 
-            // ✅ mandatory (always true)
+            // premium cache defaults
+            if (!prefs.contains(KEY_PREMIUM)) p[KEY_PREMIUM] = false
+            if (!prefs.contains(KEY_PREMIUM_LASTCHECK)) p[KEY_PREMIUM_LASTCHECK] = 0L
+
+            // mandatory (always true)
             p[KEY_CONSENT_ANALYTICS] = true
             p[KEY_CONSENT_CONTENT] = true
         }
@@ -149,7 +180,109 @@ class SettingsRepository(private val context: Context) {
             runCatching { migrateRecentsToIncludeNames() }
             context.dataStore.edit { p -> p[KEY_RECENTS_MIGRATED_V1] = true }
         }
+
+        // Enforce plan rules at boot using cached premium
+        val isPremiumCached = (context.dataStore.data.first()[KEY_PREMIUM] ?: false)
+        enforcePlanRules(isPremiumCached)
     }
+
+    // ---------- PREMIUM CACHE + ENFORCEMENT ----------
+
+    suspend fun setPremiumCache(state: PremiumState) {
+        context.dataStore.edit { p ->
+            p[KEY_PREMIUM] = state.isPremium
+            p[KEY_PREMIUM_PRODUCT] = state.activeProductId.orEmpty()
+            p[KEY_PREMIUM_LASTCHECK] = state.lastCheckedAt
+            p[KEY_PREMIUM_ERROR] = state.error.orEmpty()
+        }
+    }
+
+    /**
+     * Central “source of truth” enforcement.
+     * Call when premium changes AND at app start.
+     */
+    suspend fun enforcePlanRules(isPremium: Boolean) {
+        context.dataStore.edit { p ->
+            if (!isPremium) {
+                // free plan locks:
+                p[KEY_PROVIDER] = ProviderId.NOVA.name
+                p[KEY_MODEL] = PremiumGates.MODEL_NOVA_MICRO
+                p[KEY_TEMP] = PremiumGates.FREE_TEMPERATURE
+                p[KEY_RECENTS_LIMIT] = PremiumGates.FREE_RECENTS_LIMIT
+
+                // also trim recents immediately
+                val cur = decodeList(p[KEY_RECENTS].orEmpty())
+                p[KEY_RECENTS] = encodeList(cur.take(PremiumGates.FREE_RECENTS_LIMIT))
+            } else {
+                // premium: allow bigger recents (keep user choice if already set)
+                val curLimit = (p[KEY_RECENTS_LIMIT] ?: 10).coerceIn(3, PremiumGates.PREMIUM_RECENTS_LIMIT)
+                if (curLimit < 10) p[KEY_RECENTS_LIMIT] = 10
+
+                // ✅ If user was previously forced to free micro on NOVA, promote to premium lite
+                val provider = runCatching {
+                    ProviderId.valueOf(p[KEY_PROVIDER] ?: ProviderId.NOVA.name)
+                }.getOrDefault(ProviderId.NOVA)
+
+                val currentModel = p[KEY_MODEL].orEmpty()
+
+                if (provider == ProviderId.NOVA && (
+                            currentModel.isBlank() ||
+                                    currentModel == PremiumGates.MODEL_NOVA_MICRO ||
+                                    currentModel == PremiumGates.NOVA_MICRO_MODEL
+                            )
+                ) {
+                    p[KEY_MODEL] = PremiumGates.MODEL_NOVA_LITE
+                }
+            }
+        }
+    }
+
+    // ---------- CHAT COUNTS PER DOC ----------
+
+    suspend fun getDocChatCount(docId: String): Int {
+        val key = docId.trim()
+        if (key.isBlank()) return 0
+        val prefs = context.dataStore.data.first()
+        val map = decodeCounts(prefs[KEY_DOC_CHAT_COUNTS].orEmpty())
+        return map[key] ?: 0
+    }
+
+    /**
+     * increments and returns NEW value
+     */
+    suspend fun incrementDocChatCount(docId: String): Int {
+        val key = docId.trim()
+        if (key.isBlank()) return 0
+
+        var newVal = 0
+        context.dataStore.edit { p ->
+            val map = decodeCounts(p[KEY_DOC_CHAT_COUNTS].orEmpty()).toMutableMap()
+            val next = (map[key] ?: 0) + 1
+            map[key] = next
+            p[KEY_DOC_CHAT_COUNTS] = encodeCounts(map)
+            newVal = next
+        }
+        return newVal
+    }
+
+    private fun encodeCounts(map: Map<String, Int>): String =
+        map.entries.joinToString("\n") { (k, v) -> "${k.replace("\n", "")}\t$v" }.trim()
+
+    private fun decodeCounts(raw: String): Map<String, Int> {
+        if (raw.isBlank()) return emptyMap()
+        val out = LinkedHashMap<String, Int>()
+        raw.split("\n").forEach { line ->
+            val parts = line.split("\t")
+            if (parts.size >= 2) {
+                val k = parts[0].trim()
+                val v = parts[1].trim().toIntOrNull()
+                if (k.isNotBlank() && v != null) out[k] = v
+            }
+        }
+        return out
+    }
+
+    // ---------- PROFILE / TELEMETRY ----------
 
     suspend fun getTelemetryPrefsOnce(): TelemetryPrefs = telemetryPrefsFlow.first()
     suspend fun getUserProfileOnce(): UserProfile = userProfileFlow.first()
@@ -172,7 +305,6 @@ class SettingsRepository(private val context: Context) {
         city: String? = null,
         state: String? = null
     ) {
-        // ✅ Read existing so we don't overwrite on "Skip"
         val existing = getUserProfileOnce()
 
         val newGender = normGender(gender)
@@ -187,7 +319,7 @@ class SettingsRepository(private val context: Context) {
             it[KEY_AUTH_METHOD] = "google"
             it[KEY_NAME] = name.trim()
             it[KEY_EMAIL_GOOGLE] = email.trim()
-            it[KEY_EMAIL_MANUAL] = ""          // ✅ clear other mode
+            it[KEY_EMAIL_MANUAL] = ""
             it[KEY_EMAIL_VERIFIED] = true
             it[KEY_IDENTITY_KEY] = email.trim().lowercase()
 
@@ -208,7 +340,7 @@ class SettingsRepository(private val context: Context) {
             it[KEY_AUTH_METHOD] = "manual"
             it[KEY_NAME] = name.trim()
             it[KEY_EMAIL_MANUAL] = email.trim()
-            it[KEY_EMAIL_GOOGLE] = ""          // ✅ clear other mode
+            it[KEY_EMAIL_GOOGLE] = ""
             it[KEY_EMAIL_VERIFIED] = false
             it[KEY_IDENTITY_KEY] = email.trim().lowercase()
             it[KEY_GENDER] = gender.trim()
@@ -217,10 +349,12 @@ class SettingsRepository(private val context: Context) {
         }
     }
 
-    // ---- existing methods unchanged below ----
+    // ---------- AI SETTINGS ----------
+
     private fun defaultModel(p: ProviderId): String = when (p) {
-        ProviderId.GROQ -> "nova-micro-v1"
-        ProviderId.NOVA -> "nova-lite-v1"
+        // Free/default-safe model for non-premium flows
+        ProviderId.GROQ -> PremiumGates.MODEL_NOVA_MICRO
+        ProviderId.NOVA -> PremiumGates.MODEL_NOVA_LITE
         ProviderId.OPENROUTER -> "openai/gpt-4o-mini"
         ProviderId.LOCAL_OPENAI_COMPAT -> ""
     }
@@ -239,34 +373,67 @@ class SettingsRepository(private val context: Context) {
         android.util.Log.d("Telemetry", "Persisted canonical user_id=$u")
     }
 
-    suspend fun setModel(m: String) { context.dataStore.edit { it[KEY_MODEL] = m.trim() } }
-    suspend fun setBaseUrl(url: String) { context.dataStore.edit { it[KEY_BASEURL] = url.trim() } }
-    suspend fun setTemperature(t: Float) { context.dataStore.edit { it[KEY_TEMP] = t.coerceIn(0f, 1f) } }
+    suspend fun setModel(m: String) {
+        context.dataStore.edit { it[KEY_MODEL] = m.trim() }
+    }
 
-    suspend fun setKeepScreenOn(on: Boolean) { context.dataStore.edit { it[KEY_KEEP_SCREEN_ON] = on } }
-    suspend fun setRecentsLimit(limit: Int) { context.dataStore.edit { it[KEY_RECENTS_LIMIT] = limit.coerceIn(3, 10) } }
-    suspend fun setAutoOpenAi(on: Boolean) { context.dataStore.edit { it[KEY_AUTO_OPEN_AI] = on } }
-    suspend fun setDefaultEntireDoc(on: Boolean) { context.dataStore.edit { it[KEY_DEFAULT_ENTIRE_DOC] = on } }
-    suspend fun setBgDim(v: Float) { context.dataStore.edit { it[KEY_BG_DIM] = v.coerceIn(0f, 0.45f) } }
-    suspend fun setChatHistoryLimit(v: Int) { context.dataStore.edit { it[KEY_CHAT_HISTORY_LIMIT] = v.coerceIn(1, 10) } }
+    suspend fun setBaseUrl(url: String) {
+        context.dataStore.edit { it[KEY_BASEURL] = url.trim() }
+    }
+
+    suspend fun setTemperature(t: Float) {
+        context.dataStore.edit { it[KEY_TEMP] = t.coerceIn(0f, 1f) }
+    }
+
+    // ---------- READER SETTINGS ----------
+
+    suspend fun setKeepScreenOn(on: Boolean) {
+        context.dataStore.edit { it[KEY_KEEP_SCREEN_ON] = on }
+    }
+
+    suspend fun setRecentsLimit(limit: Int) {
+        context.dataStore.edit {
+            it[KEY_RECENTS_LIMIT] = limit.coerceIn(3, PremiumGates.PREMIUM_RECENTS_LIMIT)
+        }
+    }
+
+    suspend fun setAutoOpenAi(on: Boolean) {
+        context.dataStore.edit { it[KEY_AUTO_OPEN_AI] = on }
+    }
+
+    suspend fun setDefaultEntireDoc(on: Boolean) {
+        context.dataStore.edit { it[KEY_DEFAULT_ENTIRE_DOC] = on }
+    }
+
+    suspend fun setBgDim(v: Float) {
+        context.dataStore.edit { it[KEY_BG_DIM] = v.coerceIn(0f, 0.45f) }
+    }
+
+    suspend fun setChatHistoryLimit(v: Int) {
+        context.dataStore.edit { it[KEY_CHAT_HISTORY_LIMIT] = v.coerceIn(1, 10) }
+    }
 
     suspend fun addRecent(uri: String) {
         val u = uri.trim()
         if (u.isBlank()) return
 
         context.dataStore.edit { prefs ->
-            val limit = (prefs[KEY_RECENTS_LIMIT] ?: 10).coerceIn(3, 10)
+            val limit = (prefs[KEY_RECENTS_LIMIT] ?: 10).coerceIn(3, PremiumGates.PREMIUM_RECENTS_LIMIT)
             val cur = decodeList(prefs[KEY_RECENTS].orEmpty())
             val uUri = recentUri(u)
+
             val next = buildList {
                 add(u)
                 cur.filterNot { recentUri(it) == uUri }.forEach { add(it) }
             }.take(limit)
+
             prefs[KEY_RECENTS] = encodeList(next)
         }
     }
 
-    suspend fun clearRecents() { context.dataStore.edit { it.remove(KEY_RECENTS) } }
+    suspend fun clearRecents() {
+        context.dataStore.edit { it.remove(KEY_RECENTS) }
+    }
 
     private fun queryDisplayName(uri: Uri): String? {
         return runCatching {
@@ -290,10 +457,16 @@ class SettingsRepository(private val context: Context) {
                 if (uriStr.isBlank()) continue
 
                 val hasName = entry.contains(RECENT_SEP) && entry.substringAfter(RECENT_SEP).trim().isNotBlank()
-                if (hasName) { add(entry); continue }
+                if (hasName) {
+                    add(entry)
+                    continue
+                }
 
                 val uri = runCatching { Uri.parse(uriStr) }.getOrNull()
-                if (uri == null) { add(uriStr); continue }
+                if (uri == null) {
+                    add(uriStr)
+                    continue
+                }
 
                 val persistedRead = runCatching {
                     context.contentResolver.persistedUriPermissions.any { it.uri == uri && it.isReadPermission }

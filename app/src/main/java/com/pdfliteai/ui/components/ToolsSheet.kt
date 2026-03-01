@@ -31,7 +31,7 @@ import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Divider
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -42,7 +42,6 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -106,7 +105,10 @@ fun ToolsSheetV2(
     // go to page number (1-based)
     onGoToPage1Based: (Int) -> Unit,
 
-    // ✅ NEW: rotate helpers
+    isPremium: Boolean,
+    onGoPremium: () -> Unit,
+
+    // rotate helpers
     onRotatePage1Based: (Int) -> Unit,
     onRotateEntireDocument: () -> Unit
 ) {
@@ -164,7 +166,7 @@ fun ToolsSheetV2(
     // Go to page
     var goToPageInput by remember { mutableStateOf("") }
 
-    // ✅ Rotate options
+    // Rotate page
     var rotatePageInput by remember { mutableStateOf("") }
 
     fun sharePdfWithName(file: File, name: String) {
@@ -186,6 +188,13 @@ fun ToolsSheetV2(
         }.onFailure {
             scope.launch { snack.showSnackbar(it.message ?: "Share failed") }
         }
+    }
+
+    fun requirePremium(featureName: String): Boolean {
+        if (isPremium) return true
+        scope.launch { snack.showSnackbar("$featureName is a Premium feature") }
+        onGoPremium()
+        return false
     }
 
     ModalBottomSheet(
@@ -254,7 +263,12 @@ fun ToolsSheetV2(
                             modifier = Modifier.fillMaxWidth(),
                             enabled = hasDoc && !busy,
                             singleLine = true,
-                            placeholder = { Text("Enter text to search", color = Color.White.copy(alpha = 0.45f)) }
+                            placeholder = {
+                                Text(
+                                    "Enter text to search",
+                                    color = Color.White.copy(alpha = 0.45f)
+                                )
+                            }
                         )
 
                         Row(
@@ -290,7 +304,9 @@ fun ToolsSheetV2(
                                         } else {
                                             val pagesHuman = outcome.pages0Based.joinToString(", ") { (it + 1).toString() }
                                             searchStatus = "Found ${outcome.occurrences} matches on pages: $pagesHuman"
-                                            if (outcome.firstPage0Based >= 0) onGoToPage1Based(outcome.firstPage0Based + 1)
+                                            if (outcome.firstPage0Based >= 0) {
+                                                onGoToPage1Based(outcome.firstPage0Based + 1)
+                                            }
                                         }
                                     }
                                 },
@@ -309,7 +325,8 @@ fun ToolsSheetV2(
                                     searchStatus = null
                                     onClearSearchHighlights()
                                 },
-                                enabled = hasDoc && !busy && (searchHasHighlights || searchQ.isNotBlank() || !searchStatus.isNullOrBlank()),
+                                enabled = hasDoc && !busy &&
+                                        (searchHasHighlights || searchQ.isNotBlank() || !searchStatus.isNullOrBlank()),
                                 modifier = Modifier.weight(1f),
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = Color.White.copy(alpha = 0.12f),
@@ -327,9 +344,9 @@ fun ToolsSheetV2(
                             )
                         }
 
-                        Divider(color = Color.White.copy(alpha = 0.10f))
+                        HorizontalDivider(color = Color.White.copy(alpha = 0.10f))
 
-                        // 2) Read Loud
+                        // 2) Read Aloud
                         SectionTitle("Read PDF Loud")
 
                         Row(
@@ -373,7 +390,7 @@ fun ToolsSheetV2(
                             }
                         }
 
-                        Divider(color = Color.White.copy(alpha = 0.10f))
+                        HorizontalDivider(color = Color.White.copy(alpha = 0.10f))
 
                         // 3) Share
                         SectionTitle("Share")
@@ -388,9 +405,9 @@ fun ToolsSheetV2(
                             shape = RoundedCornerShape(14.dp)
                         ) { Text("Share PDF") }
 
-                        Divider(color = Color.White.copy(alpha = 0.10f))
+                        HorizontalDivider(color = Color.White.copy(alpha = 0.10f))
 
-                        // 4) Delete
+                        // 4) Delete Page
                         SectionTitle("Delete Page")
                         OutlinedTextField(
                             value = deletePageInput,
@@ -398,7 +415,9 @@ fun ToolsSheetV2(
                             modifier = Modifier.fillMaxWidth(),
                             enabled = hasDoc && !busy,
                             singleLine = true,
-                            placeholder = { Text("Page number (e.g., 2)", color = Color.White.copy(alpha = 0.45f)) }
+                            placeholder = {
+                                Text("Page number (e.g., 2)", color = Color.White.copy(alpha = 0.45f))
+                            }
                         )
                         Button(
                             onClick = {
@@ -420,22 +439,25 @@ fun ToolsSheetV2(
                             shape = RoundedCornerShape(14.dp)
                         ) { Text("Delete Page") }
 
-                        Divider(color = Color.White.copy(alpha = 0.10f))
+                        HorizontalDivider(color = Color.White.copy(alpha = 0.10f))
 
-                        // 5) Merge PDFs
+                        // 5) Merge PDFs (Premium)
                         SectionTitle("Merge PDFs")
                         Button(
-                            onClick = onMergePdfs,
+                            onClick = {
+                                if (!requirePremium("Merge PDFs")) return@Button
+                                onMergePdfs()
+                            },
                             enabled = !busy,
                             modifier = Modifier.fillMaxWidth(),
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = Color.White.copy(alpha = 0.12f),
+                                containerColor = if (isPremium) Color.White.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.08f),
                                 contentColor = Color.White
                             ),
                             shape = RoundedCornerShape(14.dp)
-                        ) { Text("Merge PDFs") }
+                        ) { Text(if (isPremium) "Merge PDFs" else "Merge PDFs (Premium)") }
 
-                        Divider(color = Color.White.copy(alpha = 0.10f))
+                        HorizontalDivider(color = Color.White.copy(alpha = 0.10f))
 
                         // 6) Save a Copy
                         SectionTitle("Save a Copy")
@@ -445,7 +467,12 @@ fun ToolsSheetV2(
                             modifier = Modifier.fillMaxWidth(),
                             enabled = hasDoc && !busy,
                             singleLine = true,
-                            placeholder = { Text("New file name (e.g., invoice.pdf)", color = Color.White.copy(alpha = 0.45f)) }
+                            placeholder = {
+                                Text(
+                                    "New file name (e.g., invoice.pdf)",
+                                    color = Color.White.copy(alpha = 0.45f)
+                                )
+                            }
                         )
                         Button(
                             onClick = {
@@ -462,9 +489,9 @@ fun ToolsSheetV2(
                             shape = RoundedCornerShape(14.dp)
                         ) { Text("Save Copy") }
 
-                        Divider(color = Color.White.copy(alpha = 0.10f))
+                        HorizontalDivider(color = Color.White.copy(alpha = 0.10f))
 
-                        // 7) Compress
+                        // 7) Compress (Premium)
                         SectionTitle("Compress PDF")
                         Row(
                             Modifier.fillMaxWidth(),
@@ -473,6 +500,7 @@ fun ToolsSheetV2(
                             Button(
                                 onClick = {
                                     if (!hasDoc) return@Button
+                                    if (!requirePremium("Compress PDF")) return@Button
                                     scope.launch {
                                         busy = true
                                         val out = runCatching { onCompress() }.getOrElse {
@@ -491,11 +519,12 @@ fun ToolsSheetV2(
                                     contentColor = Color.White
                                 ),
                                 shape = RoundedCornerShape(14.dp)
-                            ) { Text("Shrink & Share") }
+                            ) { Text(if (isPremium) "Shrink & Share" else "Premium") }
 
                             Button(
                                 onClick = {
                                     if (!hasDoc) return@Button
+                                    if (!requirePremium("Compress PDF")) return@Button
                                     scope.launch {
                                         busy = true
                                         val out = runCatching { onCompress() }.getOrElse {
@@ -515,12 +544,12 @@ fun ToolsSheetV2(
                                     contentColor = Color.White
                                 ),
                                 shape = RoundedCornerShape(14.dp)
-                            ) { Text("Shrink & Save") }
+                            ) { Text(if (isPremium) "Shrink & Save" else "Go Premium") }
                         }
 
-                        Divider(color = Color.White.copy(alpha = 0.10f))
+                        HorizontalDivider(color = Color.White.copy(alpha = 0.10f))
 
-                        // 8) Watermark
+                        // 8) Watermark (kept free as in your logic)
                         SectionTitle("Add Watermark")
                         OutlinedTextField(
                             value = watermarkText,
@@ -528,7 +557,12 @@ fun ToolsSheetV2(
                             modifier = Modifier.fillMaxWidth(),
                             enabled = hasDoc && !busy,
                             singleLine = true,
-                            placeholder = { Text("Watermark text (e.g., CONFIDENTIAL)", color = Color.White.copy(alpha = 0.45f)) }
+                            placeholder = {
+                                Text(
+                                    "Watermark text (e.g., CONFIDENTIAL)",
+                                    color = Color.White.copy(alpha = 0.45f)
+                                )
+                            }
                         )
                         Button(
                             onClick = {
@@ -555,9 +589,9 @@ fun ToolsSheetV2(
                             shape = RoundedCornerShape(14.dp)
                         ) { Text(if (busy) "Applying..." else "Apply Watermark") }
 
-                        Divider(color = Color.White.copy(alpha = 0.10f))
+                        HorizontalDivider(color = Color.White.copy(alpha = 0.10f))
 
-                        // 9) Secure (owner only) + ✅ Eye toggle
+                        // 9) Secure PDF (Premium)
                         SectionTitle("Secure PDF")
                         OutlinedTextField(
                             value = ownerPass,
@@ -583,6 +617,8 @@ fun ToolsSheetV2(
                         Button(
                             onClick = {
                                 if (!hasDoc) return@Button
+                                if (!requirePremium("Secure PDF")) return@Button
+
                                 val o = ownerPass.trim()
                                 if (o.isBlank()) {
                                     scope.launch { snack.showSnackbar("Enter password") }
@@ -603,14 +639,14 @@ fun ToolsSheetV2(
                                 contentColor = Color.White
                             ),
                             shape = RoundedCornerShape(14.dp)
-                        ) { Text(if (busy) "Securing..." else "Apply Security") }
+                        ) { Text(if (busy) "Securing..." else if (isPremium) "Apply Security" else "Apply Security (Premium)") }
 
-                        Divider(color = Color.White.copy(alpha = 0.10f))
+                        HorizontalDivider(color = Color.White.copy(alpha = 0.10f))
 
                         // Other
                         SectionTitle("Other")
 
-                        // ✅ Rotate specific page + rotate entire document
+                        // Rotate specific page + rotate entire document
                         OutlinedTextField(
                             value = rotatePageInput,
                             onValueChange = { rotatePageInput = it.filter(Char::isDigit).take(5) },
@@ -632,7 +668,6 @@ fun ToolsSheetV2(
                                         scope.launch { snack.showSnackbar("Enter a valid page number") }
                                         return@Button
                                     }
-                                    // if pageCount is known, validate; otherwise allow and let scroll/render catch up
                                     if (pageCount > 0 && n > pageCount) {
                                         scope.launch { snack.showSnackbar("Page must be between 1 and $pageCount") }
                                         return@Button
@@ -665,7 +700,7 @@ fun ToolsSheetV2(
                             ) { Text("Rotate All") }
                         }
 
-                        // ✅ Go to Page (fixed)
+                        // Go to Page
                         OutlinedTextField(
                             value = goToPageInput,
                             onValueChange = { goToPageInput = it.filter(Char::isDigit).take(5) },

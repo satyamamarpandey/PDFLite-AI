@@ -71,30 +71,29 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pdfliteai.data.ProviderId
 import kotlinx.coroutines.launch
+import com.pdfliteai.billing.PremiumGates
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BotSheet(
     open: Boolean,
     onClose: () -> Unit,
-
     provider: ProviderId,
     onProviderChange: (ProviderId) -> Unit,
-
     busy: Boolean,
-
     quickPrompts: List<Pair<String, String>>,
     onQuickAsk: (String) -> Unit,
-
     question: String,
     onQuestionChange: (String) -> Unit,
     onAsk: () -> Unit,
     onClearInput: () -> Unit,
-
     errorText: String?,
     messages: List<ChatMessage>,
+    historyChatsLimit: Int = 50,
 
-    historyChatsLimit: Int = 50
+    isPremium: Boolean,
+    docChatCount: Int,
+    onGoPremium: () -> Unit
 ) {
     if (!open) return
 
@@ -207,10 +206,22 @@ fun BotSheet(
                             color = Color.White
                         )
 
+                        if (!isPremium) {
+                            Text(
+                                "Free: $docChatCount/${PremiumGates.FREE_CHATS_PER_PDF} chats used for this PDF",
+                                color = Color.White.copy(alpha = 0.70f),
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            TextButton(onClick = onGoPremium) {
+                                Text("Go Premium", color = Color.White)
+                            }
+                        }
+
                         ProviderPicker(
                             provider = provider,
                             onProviderChange = onProviderChange,
-                            enabled = !busy
+                            enabled = !busy,
+                            isPremium = isPremium
                         )
 
                         HorizontalDivider(color = Color.White.copy(alpha = 0.10f))
@@ -426,7 +437,8 @@ fun BotSheet(
 private fun ProviderPicker(
     provider: ProviderId,
     onProviderChange: (ProviderId) -> Unit,
-    enabled: Boolean
+    enabled: Boolean,
+    isPremium: Boolean
 ) {
     var expanded by remember { mutableStateOf(false) }
     var anchorSize by remember { mutableStateOf(IntSize.Zero) }
@@ -489,6 +501,7 @@ private fun ProviderPicker(
         ) {
             providers.forEach { (id, name) ->
                 val selected = id == provider
+                val allowed = isPremium || id == ProviderId.NOVA
                 DropdownMenuItem(
                     text = {
                         Text(
@@ -501,7 +514,7 @@ private fun ProviderPicker(
                         expanded = false
                         onProviderChange(id)
                     },
-                    enabled = enabled
+                    enabled = enabled && allowed
                 )
             }
         }
