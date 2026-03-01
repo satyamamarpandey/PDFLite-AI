@@ -30,8 +30,8 @@ android {
         applicationId = "com.pdfliteai"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 4
+        versionName = "1.0.4"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("String", "TELEMETRY_BASE_URL", "\"$telemetryBaseUrl\"")
@@ -56,19 +56,24 @@ android {
         }
 
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
+            // ✅ TEMP: stop Play internal crashes caused by R8/minify
+            isMinifyEnabled = false
+            isShrinkResources = false
             isDebuggable = false
 
-            ndk {
-                abiFilters.clear()
-                abiFilters += listOf("arm64-v8a", "armeabi-v7a")
-            }
-
+            // ✅ Keep proguard files wired so you can re-enable later
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+
+            // ✅ Helps remove Play Console “native debug symbols missing” warning
+            // (see step #3 below for how to upload symbols)
+            ndk {
+                abiFilters.clear()
+                abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+                debugSymbolLevel = "FULL"
+            }
         }
     }
 
@@ -142,4 +147,5 @@ dependencies {
 
     // ✅ Optional but recommended for best support on Android 13 and below
     implementation("androidx.credentials:credentials-play-services-auth:1.5.0")
+    implementation("com.android.billingclient:billing-ktx:7.1.1")
 }
